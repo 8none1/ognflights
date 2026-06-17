@@ -97,6 +97,17 @@ def cmd_export(a):
         print("nothing matched")
 
 
+def cmd_backfill(a):
+    from ognflights import cgc
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    cookie = a.cookie or os.environ.get("CAMGLIDING_COOKIE")
+    if not cookie:
+        print("need a CGC cookie: --cookie VALUE or CAMGLIDING_COOKIE env var"); return
+    store = Store(DB_PATH)
+    n = cgc.backfill(store, _day(a.day), cookie)
+    print(f"backfilled {n} fixes from CGC for {a.day}")
+
+
 def cmd_earth(a):
     """Dump every aircraft's full track for a day into one KML."""
     store = Store(DB_PATH)
@@ -144,6 +155,11 @@ def main():
     ex.add_argument("--format", choices=[*export.WRITERS, "all"], default="all")
     ex.add_argument("--outdir", default=".")
     ex.set_defaults(func=cmd_export)
+
+    bf = sub.add_parser("backfill", help="import a past day from the CGC tracking API")
+    bf.add_argument("--day", required=True)
+    bf.add_argument("--cookie", help="CGC session cookie (else CAMGLIDING_COOKIE env)")
+    bf.set_defaults(func=cmd_backfill)
 
     ea = sub.add_parser("earth", help="dump all tracks for a day into one KML")
     ea.add_argument("--day", required=True)

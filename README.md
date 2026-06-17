@@ -20,7 +20,11 @@ FLARM/ADS-B on aircraft  ->  OGN ground receivers (APRS-IS)  ->  ognflights
 
 - **`aprs.py`** - connects to the OGN APRS-IS feed with a server-side radius
   filter and parses position beacons (lat/lon/alt/speed/climb + device id flags).
-  Stdlib sockets only, no dependencies.
+  Stdlib sockets only, no dependencies. **Live only - OGN has no history**, so the
+  collector must run continuously to capture flying days.
+- **`cgc.py`** - historical backfill: the Cambridge Gliding Centre tracking page
+  retains the last few days and is pulled into the same store. Use it to recover
+  days the collector missed; use OGN for everything going forward.
 - **`ddb.py`** - downloads the OGN Device Database and maps a device's hex id to
   its registration, competition number, model and type. Cached 24 h.
 - **`store.py`** - SQLite: `fixes` (every position) + `devices` (resolved metadata).
@@ -38,6 +42,10 @@ python3 cli.py collect
 
 #    ...or cap it for a quick test:
 python3 cli.py collect --minutes 5
+
+# 1b. Backfill a recent past day from the CGC tracking API (OGN has no history;
+#     CGC retains the last few days). Writes into the same store.
+CAMGLIDING_COOKIE=... python3 cli.py backfill --day 2026-06-17
 
 # 2. See what was captured on a day (UTC):
 python3 cli.py aircraft --day 2026-06-17
