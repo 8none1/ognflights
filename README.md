@@ -47,6 +47,10 @@ python3 cli.py flights --day 2026-06-17 --reg G-CKFY
 
 # 4. Export your flights (numbers come from the `flights` listing):
 python3 cli.py export --day 2026-06-17 --reg G-CKFY --flights 4,5,6 --format all --outdir out/
+
+# 5. Dump everything captured that day into ONE Google-Earth file
+#    (colour-coded folder per aircraft). --gliders drops ADS-B airliners.
+python3 cli.py earth --day 2026-06-17 --out capture.kml [--gliders]
 ```
 
 The collector is meant to run continuously so it captures whole flying days. See

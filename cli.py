@@ -97,6 +97,26 @@ def cmd_export(a):
         print("nothing matched")
 
 
+def cmd_earth(a):
+    """Dump every aircraft's full track for a day into one KML."""
+    store = Store(DB_PATH)
+    lo, hi = store.day_bounds(_day(a.day))
+    gliderish = {"glider", "tow", "motorglider"}
+    tracks = []
+    for addr, label, ac_type, _count in store.addresses_on_day(_day(a.day)):
+        if a.gliders and ac_type not in gliderish:
+            continue
+        _, model = store.device_label(addr)
+        fixes = store.fixes_for(addr, lo, hi)
+        tracks.append((label, model or ac_type, fixes))
+    if not tracks:
+        print("no aircraft for that day"); return
+    doc = export.kml_tracks(tracks, f"OGN capture {a.day}")
+    with open(a.out, "w") as f:
+        f.write(doc)
+    print(f"wrote {a.out} ({len(tracks)} aircraft, {sum(len(t[2]) for t in tracks)} fixes)")
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -124,6 +144,12 @@ def main():
     ex.add_argument("--format", choices=[*export.WRITERS, "all"], default="all")
     ex.add_argument("--outdir", default=".")
     ex.set_defaults(func=cmd_export)
+
+    ea = sub.add_parser("earth", help="dump all tracks for a day into one KML")
+    ea.add_argument("--day", required=True)
+    ea.add_argument("--out", default="capture.kml")
+    ea.add_argument("--gliders", action="store_true", help="only gliders/tugs (drop ADS-B airliners)")
+    ea.set_defaults(func=cmd_earth)
 
     args = p.parse_args()
     args.func(args)

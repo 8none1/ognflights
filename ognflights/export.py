@@ -87,3 +87,51 @@ def igc(flight: Flight, label: str, model: str = "") -> str:
 
 
 WRITERS = {"gpx": gpx, "kml": kml, "igc": igc}
+
+
+# Distinct KML line colours (aabbggrr) for cycling per aircraft.
+_PALETTE = [
+    "ff1e90ff", "ff32cd32", "ff0000ff", "ffff9000", "ffff00ff",
+    "ff00ffff", "ff8000ff", "ff00a5ff", "ff808000", "ffcb3aff",
+]
+
+
+def _linestring(coords: str, style_id: str, name: str, desc: str) -> list[str]:
+    return [
+        '    <Placemark>', f'      <name>{name}</name>', f'      <description>{desc}</description>',
+        f'      <styleUrl>#{style_id}</styleUrl>',
+        '      <LineString><altitudeMode>absolute</altitudeMode><tessellate>1</tessellate>',
+        f'        <coordinates>{coords}</coordinates>',
+        '      </LineString>', '    </Placemark>',
+    ]
+
+
+def kml_tracks(tracks: list[tuple[str, str, list]], doc_name: str) -> str:
+    """One KML Document containing every track as a colour-coded folder.
+
+    tracks: list of (label, model, fixes). Each becomes a folder with a track
+    placemark (and a start pin), so the whole capture opens at once.
+    """
+    out = ['<?xml version="1.0" encoding="UTF-8"?>',
+           '<kml xmlns="http://www.opengis.net/kml/2.2">', '  <Document>',
+           f'    <name>{doc_name}</name>']
+    for i in range(len(_PALETTE)):
+        out.append(f'    <Style id="c{i}"><LineStyle><color>{_PALETTE[i]}</color>'
+                   f'<width>2</width></LineStyle><IconStyle><scale>0.7</scale></IconStyle></Style>')
+    for idx, (label, model, fixes) in enumerate(tracks):
+        if not fixes:
+            continue
+        sid = f"c{idx % len(_PALETTE)}"
+        coords = " ".join(f"{f.lon},{f.lat},{round(f.alt_ft * FT_TO_M, 1)}" for f in fixes)
+        t0 = _utc(fixes[0].ts).strftime("%H:%M")
+        t1 = _utc(fixes[-1].ts).strftime("%H:%M")
+        desc = f"{model} | {len(fixes)} fixes | {t0}-{t1} UTC"
+        out.append(f'    <Folder><name>{label}</name>')
+        out += _linestring(coords, sid, label, desc)
+        out += ['      <Placemark><name>start</name>',
+                f'        <styleUrl>#{sid}</styleUrl>',
+                f'        <Point><coordinates>{fixes[0].lon},{fixes[0].lat},'
+                f'{round(fixes[0].alt_ft * FT_TO_M, 1)}</coordinates></Point></Placemark>',
+                '    </Folder>']
+    out += ['  </Document>', '</kml>']
+    return "\n".join(out)
