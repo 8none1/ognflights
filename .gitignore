@@ -1,0 +1,10 @@
+.venv/
+__pycache__/
+*.pyc
+data/
+*.sqlite
+*.sqlite3
+ddb_cache.json
+*.gpx
+*.kml
+*.igc

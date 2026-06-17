@@ -1,0 +1,17 @@
+[Unit]
+Description=ognflights OGN collector
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Adjust User and paths to your install location
+User=will
+WorkingDirectory=/home/will/source/ogn-flights
+Environment=OGNFLIGHTS_DB=/home/will/source/ogn-flights/data/ogn.sqlite
+ExecStart=/usr/bin/python3 cli.py collect
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
