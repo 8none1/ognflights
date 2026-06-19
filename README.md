@@ -22,9 +22,12 @@ FLARM/ADS-B on aircraft  ->  OGN ground receivers (APRS-IS)  ->  ognflights
   filter and parses position beacons (lat/lon/alt/speed/climb + device id flags).
   Stdlib sockets only, no dependencies. **Live only - OGN has no history**, so the
   collector must run continuously to capture flying days.
-- **`cgc.py`** - historical backfill: the Cambridge Gliding Centre tracking page
-  retains the last few days and is pulled into the same store. Use it to recover
-  days the collector missed; use OGN for everything going forward.
+- **`cgc.py`** - **dormant, manual-only** historical backfill. The Cambridge
+  Gliding Centre tracking page retains the last few days, so this can recover a
+  day the collector missed. It only runs when you explicitly type `backfill` -
+  nothing calls it automatically. OGN is the primary, go-forward source; reach
+  for CGC only as a one-off "break glass". A whole day comes back in ~2 requests,
+  but be courteous and don't loop it.
 - **`ddb.py`** - downloads the OGN Device Database and maps a device's hex id to
   its registration, competition number, model and type. Cached 24 h.
 - **`store.py`** - SQLite: `fixes` (every position) + `devices` (resolved metadata).
@@ -43,9 +46,9 @@ python3 cli.py collect
 #    ...or cap it for a quick test:
 python3 cli.py collect --minutes 5
 
-# 1b. Backfill a recent past day from the CGC tracking API (OGN has no history;
-#     CGC retains the last few days). Writes into the same store.
-CAMGLIDING_COOKIE=... python3 cli.py backfill --day 2026-06-17
+# 1b. (manual, rarely) recover a missed past day from CGC - see caveat above.
+#     Run once, never loop. OGN is the normal source.
+# CAMGLIDING_COOKIE=... python3 cli.py backfill --day 2026-06-17
 
 # 2. See what was captured on a day (UTC):
 python3 cli.py aircraft --day 2026-06-17
@@ -78,6 +81,29 @@ Edit `ognflights/config.py`:
 ## Notes / caveats
 
 - OGN altitude is GPS altitude relative to the WGS84 geoid, not baro "ft ASL".
+  (The CGC backfill source supplies baro ft ASL; close enough for segmentation.)
 - Coverage is best-effort: depends on receivers being up. Aircraft set to
   "no-track" are honoured and dropped; "stealth" may still appear without id.
-- Timestamps are UTC throughout. Convert to local for display if you prefer.
+- Timestamps are UTC throughout. Convert to local for display if you prefer
+  (e.g. a 11:24 BST launch lists as 10:24).
+- OGN identifies the **aircraft**, never the pilot, so picking "your" flights
+  always means naming the glider + rough time.
+
+## Status
+
+Working and validated end to end:
+- Live OGN capture near Gransden (resolved G-CHTV, G-CFYF, G-PRET via the
+  UKGRLLP receiver).
+- Flight segmentation + GPX/KML/IGC + single-file `earth` KML.
+- CGC backfill recovered a full day (all 10 G-CKFY flights); launch classifier
+  read morning circuits as winch, afternoon as aerotow.
+
+To do (rough priority):
+1. **Deploy the collector on perceptron** (systemd unit provided) so flying days
+   are captured automatically from OGN. Until this runs continuously, OGN data
+   only exists for the minutes the collector was up.
+2. **Takeoff-proximity filter** - transiting ADS-B airliners currently register
+   as "flights"; restrict to aircraft that launch near the field. (`--gliders`
+   on `earth` is a stopgap that filters by aircraft type.)
+3. Tune the winch/aerotow classifier against more known launches.
+4. Optional: local-time display, daily auto-export, a small dashboard.
