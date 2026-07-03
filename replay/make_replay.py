@@ -69,6 +69,7 @@ const HOME=__HOME__;
 const MYAW=__MYAW__;          // {modelKey: radians} yaw offset per model; tune with number keys + [ ]
 const TRAILMODE="__TRAILMODE__";
 const SPEEDCOL=__SPEEDCOL__;
+const SINGLELINK=__SINGLELINK__;   // day string to link each aircraft to its single-aircraft view, or null
 Cesium.Ion.defaultAccessToken="";
 const viewer=new Cesium.Viewer("c",{
   baseLayer:Cesium.ImageryLayer.fromProviderAsync(Cesium.ArcGisMapServerImageryProvider.fromUrl(
@@ -151,7 +152,7 @@ const leg=[`<b>${DATA.title}</b><br><span class="hint">${DATA.flights.length} fl
     <label style="cursor:pointer;margin-left:8px"><input type="checkbox" id="placenames"> place names</label>
     <br><button id="resetview" style="cursor:pointer;margin-top:4px">reset view</button></div>`];
 if(DATA.legend.length>1) leg.push(`<div class="hint" style="margin-top:4px">show: <a href="#" id="acAll" style="color:#8cf">all</a> / <a href="#" id="acNone" style="color:#8cf">none</a></div>`);
-DATA.legend.forEach((a,i)=>leg.push(`<label style="cursor:pointer;display:block"><input type="checkbox" class="acft" data-ai="${i}" checked> <span class="sw" style="background:${a.color}"></span>${a.label} (${a.n})</label>`));
+DATA.legend.forEach((a,i)=>leg.push(`<div style="display:block"><label style="cursor:pointer"><input type="checkbox" class="acft" data-ai="${i}" checked> <span class="sw" style="background:${a.color}"></span>${a.label} (${a.n})</label>${SINGLELINK&&a.key?` <a href="?day=${SINGLELINK}&amp;address=${encodeURIComponent(a.key)}" style="color:#8cf;font-size:11px">single &rarr;</a>`:""}</div>`));
 leg.push(`<div id="models" class="hint" style="margin-top:6px"></div>`);
 leg.push(`<div class="hint" style="margin-top:6px">3D models: <a style="color:#8cf" href="https://github.com/Ysurac/FlightAirMap-3dmodels">FlightAirMap</a> (GPLv2)</div>`);
 document.getElementById("legend").innerHTML=leg.join("");
@@ -322,7 +323,7 @@ def _rdp_keep(pts, eps):
     return [i for i in range(n) if keep[i]]
 
 
-def collect(store, day, reg_spec, gliders, simplify=0.0, by_aircraft=False):
+def collect(store, day, reg_spec, gliders, simplify=0.0, by_aircraft=False, address=None):
     lo, hi = store.day_bounds(day)
     flights, legend, ai = [], [], 0
     want_reg, want_idx = None, None
@@ -333,6 +334,8 @@ def collect(store, day, reg_spec, gliders, simplify=0.0, by_aircraft=False):
         else:
             want_reg = reg_spec
     for addr, label, ac_type, _ in store.addresses_on_day(day):
+        if address is not None and addr != address:
+            continue
         if want_reg is not None and not label.startswith(want_reg):
             continue
         if want_reg is None and gliders and ac_type not in GLIDERISH:
@@ -377,7 +380,7 @@ def collect(store, day, reg_spec, gliders, simplify=0.0, by_aircraft=False):
                             "ai": aidx, "samples": samples, "spd": spd})
             used += 1
         if used:
-            legend.append({"label": label, "color": col, "n": used})
+            legend.append({"label": label, "color": col, "n": used, "key": addr})
     return flights, legend
 
 
@@ -387,11 +390,15 @@ def main():
     p.add_argument("--day", required=True)
     p.add_argument("--title", required=True)
     p.add_argument("--reg", help='e.g. "G-CKFY" or "G-CKFY:1,2,3,6"')
+    p.add_argument("--address", help="select a single aircraft by exact device address/callsign")
     p.add_argument("--gliders", action="store_true", help="all glider/tug types")
     p.add_argument("--by-aircraft", action="store_true",
                    help="one continuous track per aircraft for the whole day (bridges data gaps and "
                         "ground stops so trails never vanish); vs the default per-flight segmentation")
     p.add_argument("--mult", type=int, default=60, help="playback speed multiplier")
+    p.add_argument("--link-single", action="store_true",
+                   help="add a 'single ->' link after each legend aircraft (to ?day=<day>&address=<id>), "
+                        "for the dashboard all-gliders view")
     p.add_argument("--simplify", type=float, default=0.0,
                    help="RDP trail simplification tolerance in metres (0 = full fidelity); "
                         "drops redundant straight-line points, keeps turns. Used for the busy dashboard view.")
@@ -412,7 +419,8 @@ def main():
 
     day = datetime.strptime(a.day, "%Y-%m-%d").replace(tzinfo=timezone.utc)
     store = Store(a.db) if a.db else store_for_day(day)
-    flights, legend = collect(store, day, a.reg, a.gliders, simplify=a.simplify, by_aircraft=a.by_aircraft)
+    flights, legend = collect(store, day, a.reg, a.gliders, simplify=a.simplify,
+                              by_aircraft=a.by_aircraft, address=a.address)
     if not flights:
         raise SystemExit("no flights matched")
 
@@ -449,6 +457,7 @@ def main():
             .replace("__MYAW__", json.dumps(myaw))
             .replace("__TRAILMODE__", a.trail)
             .replace("__SPEEDCOL__", "true" if a.speed_colour else "false")
+            .replace("__SINGLELINK__", json.dumps(a.day if a.link_single else None))
             .replace("__PATHRES__", repr(a.path_resolution))
             .replace("__MULT__", str(a.mult)))
     with open(a.out, "w") as f:

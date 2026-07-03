@@ -59,19 +59,23 @@ def _days_with_flights(data_dir: str, limit: int = 21) -> list[str]:
     return sorted(days, reverse=True)[:limit]
 
 
-def _nav_html(day: datetime) -> str:
-    """A small fixed date-picker (prev / date / next) injected into the replay page."""
+def _nav_html(day: datetime, address: str | None = None) -> str:
+    """Fixed date-picker (prev / date / next) injected into the replay page. In single-aircraft
+    view it keeps the aircraft across dates and offers a link back to all gliders."""
     d = day.strftime("%Y-%m-%d")
     prev = (day - timedelta(days=1)).strftime("%Y-%m-%d")
     nxt = (day + timedelta(days=1)).strftime("%Y-%m-%d")
+    q = f"&address={address}" if address else ""
+    extra = (f'<a href="/?day={d}" style="color:#8cf;margin-left:8px">all gliders</a>'
+             if address else '<a href="/stats" style="color:#8cf;margin-left:8px">stats</a>')
     return (
         '<div style="position:fixed;top:8px;left:50%;transform:translateX(-50%);z-index:20;'
         'background:rgba(0,0,0,.6);color:#fff;padding:5px 9px;border-radius:6px;font:13px sans-serif">'
-        f'<a href="/?day={prev}" style="color:#8cf;text-decoration:none">&#9664;</a> '
-        f'<input type="date" value="{d}" onchange="location=\'/?day=\'+this.value" '
+        f'<a href="/?day={prev}{q}" style="color:#8cf;text-decoration:none">&#9664;</a> '
+        f'<input type="date" value="{d}" onchange="location=\'/?day=\'+this.value+\'{q}\'" '
         'style="font:13px sans-serif;background:#222;color:#fff;border:1px solid #555;border-radius:3px"> '
-        f'<a href="/?day={nxt}" style="color:#8cf;text-decoration:none">&#9654;</a>'
-        ' <a href="/stats" style="color:#8cf;margin-left:8px">stats</a></div>')
+        f'<a href="/?day={nxt}{q}" style="color:#8cf;text-decoration:none">&#9654;</a>'
+        f' {extra}</div>')
 
 
 def _aircraft_count(day: datetime, data_dir: str) -> int:
@@ -87,24 +91,28 @@ def _aircraft_count(day: datetime, data_dir: str) -> int:
         s.close()
 
 
-def _render_replay(day: datetime, replay_script: str, data_dir: str) -> str | None:
-    key = day.strftime("%Y-%m-%d")
+def _render_replay(day: datetime, replay_script: str, data_dir: str, address: str | None = None) -> str | None:
+    daystr = day.strftime("%Y-%m-%d")
+    key = daystr + ("|" + address if address else "")
     with _cache_lock:
         hit = _cache.get(key)
         if hit and time.time() - hit[1] < REPLAY_TTL:
             return hit[0]
-    # Simplify trails harder when more gliders are on screen (keeps it responsive).
-    # A handful of aircraft render full-fidelity; a busy day is thinned (turns preserved).
-    n_ac = _aircraft_count(day, data_dir)
-    simplify = max(0, min(60, (n_ac - 4) * 4))
-    # comet-tail sampling: coarser (cheaper per frame) the more aircraft are on screen.
-    path_res = min(15, max(1, n_ac // 3))
     tmp = tempfile.mktemp(suffix=".html")
-    cmd = ["python3", replay_script, "--out", tmp, "--day", key,
-           "--title", f"All gliders {key}", "--gliders", "--mult", "60",
-           "--path-resolution", str(path_res)]
-    if simplify:
-        cmd += ["--simplify", str(simplify)]
+    if address:
+        # single-aircraft: full fidelity (no simplify, fine comet-tail), per-flight.
+        cmd = ["python3", replay_script, "--out", tmp, "--day", daystr,
+               "--title", f"{address} {daystr}", "--address", address, "--mult", "30", "--trail", "full"]
+    else:
+        # all gliders: simplify + coarser tails scaled to aircraft count; link each to its single view.
+        n_ac = _aircraft_count(day, data_dir)
+        simplify = max(0, min(60, (n_ac - 4) * 4))
+        path_res = min(15, max(1, n_ac // 3))
+        cmd = ["python3", replay_script, "--out", tmp, "--day", daystr,
+               "--title", f"All gliders {daystr}", "--gliders", "--mult", "60",
+               "--link-single", "--path-resolution", str(path_res)]
+        if simplify:
+            cmd += ["--simplify", str(simplify)]
     try:
         subprocess.run(cmd, check=True, capture_output=True, timeout=120)
     except subprocess.CalledProcessError:
@@ -218,16 +226,21 @@ def make_handler(status, data_dir, replay_script, models_dir):
                 else:
                     self._send(404, "not found")
             elif path == "/":
-                day = _parse_day(urlparse(self.path).query)
-                nav = _nav_html(day)
-                html = _render_replay(day, replay_script, data_dir)
+                q = urlparse(self.path).query
+                day = _parse_day(q)
+                addr = parse_qs(q).get("address", [None])[0]
+                if addr and not re.match(r"^[A-Za-z0-9._-]+$", addr):
+                    addr = None
+                nav = _nav_html(day, addr)
+                html = _render_replay(day, replay_script, data_dir, addr)
                 if html is None:
                     label = "today" if day.date() == _today().date() else day.strftime("%Y-%m-%d")
+                    what = f"{addr} on {label}" if addr else label
                     self._send(200, "<!DOCTYPE html><meta charset=utf-8>"
                                "<body style='font:15px system-ui;margin:0;color:#eee;background:#111'>"
                                + nav +
                                "<div style='margin:6rem auto;max-width:32rem;text-align:center'>"
-                               f"<h1>No flights stored for {label}.</h1>"
+                               f"<h1>No flights stored for {what}.</h1>"
                                "<p>Pick another day above, or <a style='color:#8cf' href='/stats'>see status &rarr;</a></p>"
                                "</div></body>")
                 else:
