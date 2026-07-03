@@ -156,3 +156,59 @@ def stream(site: Site, radius_km: int = FILTER_RADIUS_KM, reconnect: bool = True
                 raise
             time.sleep(backoff)
             backoff = min(backoff * 2, 60)
+
+
+class OgnClient:
+    """OGN APRS-IS client with LIVE filter updates, for buddy-follow capture.
+
+    Iterate `beacons()`; call `set_filter(spec)` at any time to change the
+    server-side filter (e.g. add a `b/<callsign>` buddy to follow an aircraft
+    anywhere). The current filter is re-applied automatically on reconnect.
+    Single-threaded use only (call set_filter between beacons).
+    """
+
+    def __init__(self, filter_spec: str, reconnect: bool = True):
+        self.filter_spec = filter_spec
+        self.reconnect = reconnect
+        self._f = None
+
+    def set_filter(self, spec: str) -> None:
+        self.filter_spec = spec
+        f = self._f
+        if f is not None:
+            try:
+                f.write(f"#filter {spec}\r\n".encode()); f.flush()
+            except OSError:
+                pass  # connection gone; re-applied via login on reconnect
+
+    def beacons(self):
+        backoff = 1
+        while True:
+            try:
+                logger.info("connecting to %s:%s", APRS_HOST, APRS_PORT)
+                with socket.create_connection((APRS_HOST, APRS_PORT), timeout=20) as sock:
+                    sock.settimeout(60)
+                    f = sock.makefile("rwb"); self._f = f
+                    logger.info("server: %s", f.readline().decode("utf-8", "replace").strip())
+                    f.write((f"user {APRS_CALLSIGN} pass -1 vers ognflights 0.2 "
+                             f"filter {self.filter_spec}\r\n").encode()); f.flush()
+                    backoff = 1
+                    last_keepalive = time.time()
+                    for raw in f:
+                        line = raw.decode("utf-8", "replace").rstrip()
+                        if not line or line.startswith("#"):
+                            if time.time() - last_keepalive > 240:
+                                f.write(b"# keepalive\r\n"); f.flush()
+                                last_keepalive = time.time()
+                            continue
+                        b = parse_beacon(line)
+                        if b is not None:
+                            yield b
+            except (OSError, socket.timeout) as e:
+                logger.warning("connection error: %s", e)
+            finally:
+                self._f = None
+            if not self.reconnect:
+                return
+            time.sleep(backoff)
+            backoff = min(backoff * 2, 60)

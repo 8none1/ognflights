@@ -1,0 +1,15 @@
+.git
+data
+out
+site
+replay
+__pycache__
+*.pyc
+.venv
+*.sqlite
+*.sqlite3
+ddb_cache.json
+*.gpx
+*.kml
+*.igc
+REBUILD-PLAN.md

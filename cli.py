@@ -13,11 +13,11 @@ import os
 from datetime import datetime, timezone
 
 from ognflights import export
-from ognflights.collector import collect
+from ognflights.collector import collect, watch
 from ognflights.config import FILTER_RADIUS_KM, GRANSDEN
 from ognflights.ddb import DDB
 from ognflights.flights import classify_launch, segment
-from ognflights.store import Store
+from ognflights.store import Store, store_for_day
 
 DB_PATH = os.environ.get("OGNFLIGHTS_DB", "data/ogn.sqlite")
 
@@ -30,6 +30,21 @@ def _hms(ts: int) -> str:
     return datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%H:%M:%S")
 
 
+def _day_store(a):
+    """Store for a day: an explicit OGNFLIGHTS_DB (single file) wins, otherwise the
+    year-partitioned file for --day (data/ogn-YYYY.sqlite)."""
+    if os.environ.get("OGNFLIGHTS_DB"):
+        return Store(DB_PATH)
+    return store_for_day(_day(a.day))
+
+
+def cmd_watch(a):
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    ddb = DDB(); ddb.load()
+    n = watch(ddb, max_seconds=a.minutes * 60 if a.minutes else None)
+    print(f"stored {n} fixes")
+
+
 def cmd_collect(a):
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     store, ddb = Store(DB_PATH), DDB()
@@ -40,7 +55,7 @@ def cmd_collect(a):
 
 
 def cmd_aircraft(a):
-    store = Store(DB_PATH)
+    store = _day_store(a)
     rows = store.addresses_on_day(_day(a.day))
     print(f"{len(rows)} aircraft seen on {a.day}:")
     for addr, label, ac_type, count in rows:
@@ -59,7 +74,7 @@ def _resolve_addresses(store, a):
 
 
 def cmd_flights(a):
-    store = Store(DB_PATH)
+    store = _day_store(a)
     lo, hi = store.day_bounds(_day(a.day))
     for addr in _resolve_addresses(store, a):
         label, model = store.device_label(addr)
@@ -75,7 +90,7 @@ def cmd_flights(a):
 
 
 def cmd_export(a):
-    store = Store(DB_PATH)
+    store = _day_store(a)
     lo, hi = store.day_bounds(_day(a.day))
     fmts = list(export.WRITERS) if a.format == "all" else [a.format]
     want = set(int(x) for x in a.flights.split(",")) if a.flights else None
@@ -103,14 +118,14 @@ def cmd_backfill(a):
     cookie = a.cookie or os.environ.get("CAMGLIDING_COOKIE")
     if not cookie:
         print("need a CGC cookie: --cookie VALUE or CAMGLIDING_COOKIE env var"); return
-    store = Store(DB_PATH)
+    store = _day_store(a)
     n = cgc.backfill(store, _day(a.day), cookie)
     print(f"backfilled {n} fixes from CGC for {a.day}")
 
 
 def cmd_earth(a):
     """Dump every aircraft's full track for a day into one KML."""
-    store = Store(DB_PATH)
+    store = _day_store(a)
     lo, hi = store.day_bounds(_day(a.day))
     gliderish = {"glider", "tow", "motorglider"}
     tracks = []
@@ -132,10 +147,14 @@ def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = p.add_subparsers(dest="cmd", required=True)
 
-    c = sub.add_parser("collect", help="stream OGN feed into the store")
+    c = sub.add_parser("collect", help="stream OGN feed into the store (legacy area capture)")
     c.add_argument("--minutes", type=int, help="stop after N minutes (default: run forever)")
     c.add_argument("--radius", type=int, default=FILTER_RADIUS_KM)
     c.set_defaults(func=cmd_collect)
+
+    w = sub.add_parser("watch", help="buddy-follow daemon: track aircraft that launch from the field, anywhere")
+    w.add_argument("--minutes", type=int, help="stop after N minutes (default: run forever)")
+    w.set_defaults(func=cmd_watch)
 
     ac = sub.add_parser("aircraft", help="list aircraft seen on a day")
     ac.add_argument("--day", required=True)

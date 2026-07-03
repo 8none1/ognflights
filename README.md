@@ -40,10 +40,13 @@ FLARM/ADS-B on aircraft  ->  OGN ground receivers (APRS-IS)  ->  ognflights
 ## Usage
 
 ```bash
-# 1. Run the collector (foreground; runs until stopped). Reconnects automatically.
-python3 cli.py collect
+# 1. Capture: the buddy-follow daemon. Detects launches from the field and follows
+#    each launched aircraft anywhere until it lands. Writes data/ogn-YYYY.sqlite.
+python3 cli.py watch                 # runs until stopped (reconnects automatically)
+python3 cli.py watch --minutes 5     # cap it for a quick test
+#    (deploy it on perceptron with Docker: `docker compose up -d --build`)
 
-#    ...or cap it for a quick test:
+#    ...legacy simple area capture (stores everything within --radius):
 python3 cli.py collect --minutes 5
 
 # 1b. (manual, rarely) recover a missed past day from CGC - see caveat above.
@@ -145,15 +148,20 @@ Working and validated end to end:
 - CGC backfill recovered a full day (all 10 G-CKFY flights); launch classifier
   read morning circuits as winch, afternoon as aerotow.
 
+Done since:
+- **`watch` daemon** (buddy-follow capture): subscribe to a catch circle, detect
+  launches inside the field geofence (a climb-out, so parked aircraft are ignored),
+  then follow each launched aircraft *anywhere* via a live APRS-IS `b/` buddy filter
+  until it lands. Type-agnostic (gliders, tugs, motorgliders) and captures only our
+  flights. Supersedes the old area-capture + type filter.
+- **Year-partitioned storage** (`data/ogn-YYYY.sqlite`, WAL), kept indefinitely.
+- **Docker** deployment (`Dockerfile` + `docker-compose.yml`).
+
 To do (rough priority):
-1. **Deploy the collector on perceptron** (systemd unit provided) so flying days
-   are captured automatically from OGN. Until this runs continuously, OGN data
-   only exists for the minutes the collector was up.
-2. **Takeoff-proximity filter** - transiting ADS-B airliners currently register
-   as "flights"; restrict to aircraft that launch near the field. (`--gliders`
-   on `earth` is a stopgap that filters by aircraft type.)
-3. Tune the winch/aerotow classifier against more known launches.
-4. Optional: local-time display, daily auto-export, a small dashboard.
-5. **Live mode** - stream directly from OGN and update the Cesium map/tracks in
+1. **Deploy on perceptron**: `docker compose up -d --build` (data persists in `./data`).
+2. Tune the winch/aerotow classifier against more known launches.
+3. Optional: local-time display, daily auto-export, a small dashboard.
+4. **Live mode** - stream directly from OGN and update the Cesium map/tracks in
    real time (aircraft move as beacons arrive), instead of replaying a stored day.
-   Needs the collector running continuously plus a push/poll path to the browser.
+   The `watch` daemon already gives the continuous feed; needs a push/poll path to
+   the browser.

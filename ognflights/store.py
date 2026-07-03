@@ -44,9 +44,16 @@ class Store:
     def __init__(self, path: str = "data/ogn.sqlite"):
         import os
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        self.path = path
         self.db = sqlite3.connect(path)
+        # WAL: lets exports read while the collector writes; NORMAL sync is durable enough.
+        self.db.execute("PRAGMA journal_mode=WAL")
+        self.db.execute("PRAGMA synchronous=NORMAL")
         self.db.executescript(SCHEMA)
         self.db.commit()
+
+    def close(self) -> None:
+        self.db.close()
 
     def add_fix(self, b) -> None:
         """Insert a Beacon (ignores duplicate address+ts)."""
@@ -118,3 +125,16 @@ class Store:
             label = row[0] + (f" [{row[1]}]" if row[1] else "")
             return label, (row[2] or "")
         return address, ""
+
+
+# --- year-partitioned storage: one SQLite file per calendar year, kept indefinitely ---
+
+def year_file(year: int, data_dir: str | None = None) -> str:
+    import os
+    from .config import DATA_DIR
+    return os.path.join(data_dir or DATA_DIR, f"ogn-{year}.sqlite")
+
+
+def store_for_day(day: datetime, data_dir: str | None = None) -> "Store":
+    """Open the SQLite file for the calendar year containing `day`."""
+    return Store(year_file(day.year, data_dir))

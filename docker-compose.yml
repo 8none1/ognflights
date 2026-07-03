@@ -1,0 +1,11 @@
+# Deploy on perceptron alongside the other containers:
+#   docker compose up -d --build
+# Data (SQLite year files, kept indefinitely) persists in ./data on the host.
+services:
+  ognflights:
+    build: .
+    image: ognflights
+    container_name: ognflights
+    restart: unless-stopped
+    volumes:
+      - ./data:/app/data

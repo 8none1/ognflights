@@ -48,16 +48,23 @@ FLARM/ADS-B on aircraft  ->  OGN ground receivers (APRS-IS)  ->  collector -> SQ
 
 ## Status
 
-Validated end to end (live OGN capture, segmentation, all export formats, single-file
-`earth` KML, and a CGC backfill that recovered all 10 G-CKFY flights for a day).
+Validated end to end: OGN capture, segmentation, exports, `earth` KML, CGC backfill,
+and CesiumJS 3D replays (`replay/make_replay.py`, published to www.whizzy.org/flights).
 
-Open items: (1) **deploy collector to perceptron** so flying days are captured
-automatically; (2) **takeoff-proximity filter** so transiting ADS-B airliners stop
-registering as flights (`--gliders` is a type-based stopgap); (3) tune launch
-classifier; (4) optional local-time display / dashboard.
+Capture is now the **`watch` daemon** (buddy-follow): subscribe to a catch circle,
+detect launches inside the field geofence (a climb-out, so parked aircraft are
+ignored), then follow each launched aircraft *anywhere* via a live APRS-IS `b/`
+buddy filter until it lands. Type-agnostic; stores only our flights into
+**year-partitioned** SQLite (`data/ogn-YYYY.sqlite`, WAL). Ships as a **Docker**
+container (`Dockerfile` + `docker-compose.yml`).
+
+Open items: (1) **deploy `watch` on perceptron** (`docker compose up -d --build`);
+(2) tune the winch/aerotow classifier; (3) optional live mode / dashboard.
 
 ## Conventions
 
 - British English, no em dashes.
-- Committed locally only; **do not push without asking**.
-- Site/thresholds live in `ognflights/config.py`.
+- **GitHub repo: `8none1/ognflights` (public).** Never push to `main` without asking
+  (per Will's hard rule). The website (`8none1.github.io`) is a separate publish
+  target; the `watch`/replay tooling and CI live in this repo.
+- Site, geofence and thresholds live in `ognflights/config.py`.
