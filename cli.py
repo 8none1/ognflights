@@ -42,18 +42,21 @@ def cmd_watch(a):
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     ddb = DDB(); ddb.load()
     status = {}
+    hub = None
     if a.serve:
         import threading
         from ognflights import config, webapp
+        hub = webapp.LiveHub()
         repo = os.path.dirname(os.path.abspath(__file__))
         replay_script = os.path.join(repo, "replay", "make_replay.py")
         models_dir = os.path.join(repo, "replay", "models")
         threading.Thread(
             target=webapp.serve,
-            args=(a.port, status, config.DATA_DIR, replay_script, models_dir),
+            args=(a.port, status, config.DATA_DIR, replay_script, models_dir, hub),
             daemon=True).start()
-        logging.info("web server on :%d  (/ = replay, /stats = health)", a.port)
-    n = watch(ddb, max_seconds=a.minutes * 60 if a.minutes else None, status=status)
+        logging.info("web server on :%d  (/ = home, /replay, /live, /stats)", a.port)
+    n = watch(ddb, max_seconds=a.minutes * 60 if a.minutes else None,
+              status=status, hub=hub)
     print(f"stored {n} fixes")
 
 

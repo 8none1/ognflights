@@ -1,17 +1,19 @@
 """Tiny stdlib web server for the collector container.
 
-  /            -> today's all-gliders 3D replay (generated from the live DB, cached)
-  /live        -> real-time 3D view of currently-airborne aircraft (polls /live.json)
-  /live.json   -> JSON feed of aircraft active in the last ~2 min (recent tracks + latest pos)
+  /            -> today's all-gliders 3D replay (?day=, ?address= for single aircraft)
+  /live        -> real-time 3D view of currently-airborne aircraft (SSE-driven)
+  /live.json   -> JSON feed of aircraft active in the last ~2 min (initial snapshot)
+  /live.stream -> Server-Sent Events: one fix per followed aircraft as it arrives
   /stats,/status -> health + live capture statistics (auto-refreshing)
   /models/*.glb  -> aircraft models referenced by the replay page
 
-Runs in a thread alongside the `watch` collector, sharing a status dict.
+Runs in a thread alongside the `watch` collector, sharing a status dict + a live hub.
 """
 import glob
 import http.server
 import json
 import os
+import queue
 import re
 import socketserver
 import subprocess
@@ -49,6 +51,52 @@ def _live_model(model_str: str, ac_type: str) -> str:
     return "glider"
 
 
+def live_color(address: str) -> str:
+    """Stable palette colour for an aircraft, deterministic on its address so the
+    initial /live.json snapshot and the /live.stream events always agree."""
+    h = 0
+    for ch in address:
+        h = (h * 31 + ord(ch)) & 0xFFFFFFFF
+    return PALETTE[h % len(PALETTE)]
+
+
+def live_height_m(alt_ft: float) -> float:
+    """Height above the airfield in metres, floored at 0 (matches the replay)."""
+    return round(max(0.0, (alt_ft - GRANSDEN.elevation_ft) * FT_TO_M), 1)
+
+
+class LiveHub:
+    """In-process pub/sub between the collector and the webapp.
+
+    Each subscriber gets its own bounded queue. publish() is non-blocking: on a
+    full queue the event is dropped for that subscriber, so a slow or dead browser
+    can never stall the collector loop.
+    """
+    def __init__(self, maxsize: int = 200):
+        self._subs: set[queue.Queue] = set()
+        self._lock = threading.Lock()
+        self._maxsize = maxsize
+
+    def subscribe(self) -> "queue.Queue":
+        q: queue.Queue = queue.Queue(maxsize=self._maxsize)
+        with self._lock:
+            self._subs.add(q)
+        return q
+
+    def unsubscribe(self, q: "queue.Queue") -> None:
+        with self._lock:
+            self._subs.discard(q)
+
+    def publish(self, event: dict) -> None:
+        with self._lock:
+            subs = list(self._subs)
+        for q in subs:
+            try:
+                q.put_nowait(event)
+            except queue.Full:
+                pass  # drop for this slow subscriber; never block the collector
+
+
 def _live_feed(data_dir: str) -> dict:
     """Aircraft active in the last LIVE_ACTIVE seconds, each with its recent track."""
     now = int(time.time())
@@ -67,7 +115,6 @@ def _live_feed(data_dir: str) -> dict:
         by_addr: dict[str, list] = {}
         for addr, ts, lat, lon, alt in rows:
             by_addr.setdefault(addr, []).append((ts, lat, lon, alt))
-        idx = 0
         for addr, fixes in by_addr.items():
             if not fixes or (now - fixes[-1][0]) > LIVE_ACTIVE:
                 continue
@@ -77,19 +124,17 @@ def _live_feed(data_dir: str) -> dict:
             ).fetchone()
             ac_type = row[0] if row else ""
             mk = _live_model(model_str, ac_type)
-            pts = [[round(lon, 6), round(lat, 6),
-                    round(max(0.0, (alt - GRANSDEN.elevation_ft) * FT_TO_M), 1)]
+            pts = [[round(lon, 6), round(lat, 6), live_height_m(alt)]
                    for (_ts, lat, lon, alt) in fixes]
             out["aircraft"].append({
                 "address": addr,
                 "name": label,
                 "label": label,
-                "color": PALETTE[idx % len(PALETTE)],
+                "color": live_color(addr),
                 "model": mk,
                 "points": pts,
                 "last_ts": fixes[-1][0],
             })
-            idx += 1
     finally:
         s.close()
     return out
@@ -196,6 +241,7 @@ def _render_replay(day: datetime, replay_script: str, data_dir: str, address: st
 
 
 # Camera over Gransden, looking north-ish, oblique. lon/lat/height metres.
+# The page paints an initial /live.json snapshot then follows /live.stream (SSE).
 LIVE_CES = "https://cesium.com/downloads/cesiumjs/releases/1.143/Build/Cesium"
 LIVE_HTML = r"""<!DOCTYPE html>
 <html><head><meta charset="utf-8"><title>Live - Gransden</title>
@@ -228,36 +274,60 @@ viewer.camera.setView({
   orientation:{heading:Cesium.Math.toRadians(0),pitch:Cesium.Math.toRadians(-35),roll:0}
 });
 
-const POLL_MS=6000;
-const GRACE_MS=20000;    // remove an aircraft this long after it drops from the feed
-const ac={};             // address -> {plane, trail, color, name, model, lastSeen}
+const GRACE_MS=60000;    // remove an aircraft this long after its last event
+const MAX_TRAIL=600;     // bounded recent-points trail per aircraft
+const ac={};             // address -> {plane, trail, color, name, model, pts[], lastSeen}
 
-function upsert(a){
+// create-or-update an aircraft entity from a position (lon,lat,height_m)
+function ensure(addr,name,color,model){
+  let e=ac[addr];
+  if(e){
+    if(name){ e.name=name; e.plane.name=name; e.trail.name=name+" trail"; }
+    return e;
+  }
+  const col=Cesium.Color.fromCssColorString(color);
+  e=ac[addr]={color:color,name:name,model:model,pts:[]};
+  e.plane=viewer.entities.add({
+    name:name,
+    position:new Cesium.CallbackProperty(()=>e._pos,false),
+    model:{uri:MODELS[model]||MODELS.glider, minimumPixelSize:64, maximumScale:20000, scale:1,
+      color:col, colorBlendMode:Cesium.ColorBlendMode.MIX, colorBlendAmount:0.5,
+      silhouetteColor:col, silhouetteSize:1.5}
+  });
+  e.trail=viewer.entities.add({
+    name:name+" trail",
+    polyline:{positions:new Cesium.CallbackProperty(()=>e._trail,false),
+      width:2, material:col.withAlpha(0.55)}
+  });
+  return e;
+}
+
+// append one [lon,lat,height_m] point, keeping the trail bounded
+function pushPoint(e,pt){
+  e.pts.push(pt);
+  if(e.pts.length>MAX_TRAIL) e.pts.splice(0,e.pts.length-MAX_TRAIL);
+  e._pos=Cesium.Cartesian3.fromDegrees(pt[0],pt[1],pt[2]);
+  e._trail=Cesium.Cartesian3.fromDegreesArrayHeights([].concat(...e.pts));
+  e.lastSeen=Date.now();
+}
+
+// initial snapshot from /live.json: paint whole recent tracks (does not duplicate)
+function snapshot(a){
   const pts=a.points||[];
   if(!pts.length) return;
-  const last=pts[pts.length-1];
-  const pos=Cesium.Cartesian3.fromDegrees(last[0],last[1],last[2]);
-  const col=Cesium.Color.fromCssColorString(a.color);
-  let e=ac[a.address];
-  if(!e){
-    e=ac[a.address]={color:a.color,name:a.name,model:a.model};
-    e.plane=viewer.entities.add({
-      name:a.name,
-      position:new Cesium.CallbackProperty(()=>e._pos,false),
-      model:{uri:MODELS[a.model]||MODELS.glider, minimumPixelSize:64, maximumScale:20000, scale:1,
-        color:col, colorBlendMode:Cesium.ColorBlendMode.MIX, colorBlendAmount:0.5,
-        silhouetteColor:col, silhouetteSize:1.5}
-    });
-    e.trail=viewer.entities.add({
-      name:a.name+" trail",
-      polyline:{positions:new Cesium.CallbackProperty(()=>e._trail,false),
-        width:2, material:col.withAlpha(0.55)}
-    });
-  }
-  e._pos=pos;
-  e._trail=Cesium.Cartesian3.fromDegreesArrayHeights([].concat(...pts));
-  e.name=a.name; e.plane.name=a.name; e.trail.name=a.name+" trail";
+  const e=ensure(a.address,a.name,a.color,a.model);
+  e.pts=pts.slice(-MAX_TRAIL);
+  const last=e.pts[e.pts.length-1];
+  e._pos=Cesium.Cartesian3.fromDegrees(last[0],last[1],last[2]);
+  e._trail=Cesium.Cartesian3.fromDegreesArrayHeights([].concat(...e.pts));
   e.lastSeen=Date.now();
+}
+
+// a single streamed fix event
+function onEvent(ev){
+  const e=ensure(ev.addr,ev.label||ev.name,ev.color,ev.model);
+  pushPoint(e,[ev.lon,ev.lat,ev.height_m]);
+  renderLegend();
 }
 
 function prune(){
@@ -269,6 +339,7 @@ function prune(){
       delete ac[addr];
     }
   }
+  renderLegend();
 }
 
 function renderLegend(){
@@ -279,17 +350,22 @@ function renderLegend(){
   document.getElementById("legend").innerHTML=head+(rows.length?"<br>"+rows.join(""):"");
 }
 
-async function poll(){
+// 1) paint the current picture once, then 2) open the live event stream.
+async function start(){
   try{
     const r=await fetch("live.json",{cache:"no-store"});
     const d=await r.json();
-    (d.aircraft||[]).forEach(upsert);
-    prune();
-    renderLegend();
-  }catch(e){ /* transient; try again next tick */ }
-  setTimeout(poll, POLL_MS);
+    (d.aircraft||[]).forEach(snapshot);
+  }catch(e){ /* no snapshot; the stream will fill in */ }
+  renderLegend();
+  const es=new EventSource("live.stream");
+  es.onmessage=function(m){
+    try{ onEvent(JSON.parse(m.data)); }catch(e){}
+  };
+  // EventSource auto-reconnects; ensure()/snapshot() are idempotent so no dupes.
 }
-poll();
+start();
+setInterval(prune, 5000);
 
 // hover tooltip: aircraft name under the cursor
 const _tip=document.createElement("div");
@@ -385,7 +461,7 @@ th{{color:#666;font-weight:600;width:45%}} a{{color:#1e6fd0}} .hint{{color:#999;
 </body></html>"""
 
 
-def make_handler(status, data_dir, replay_script, models_dir):
+def make_handler(status, data_dir, replay_script, models_dir, hub):
     class Handler(http.server.BaseHTTPRequestHandler):
         def log_message(self, *a):
             pass
@@ -399,6 +475,38 @@ def make_handler(status, data_dir, replay_script, models_dir):
             if self.command != "HEAD":
                 self.wfile.write(data)
 
+        def _stream(self):
+            """Server-Sent Events: live fixes for followed aircraft, plus heartbeats."""
+            q = hub.subscribe()
+            try:
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+                self.send_header("Cache-Control", "no-cache")
+                self.send_header("Connection", "keep-alive")
+                self.send_header("X-Accel-Buffering", "no")  # disable proxy buffering
+                self.end_headers()
+                if self.command == "HEAD":
+                    return
+                self.wfile.write(b": connected\n\n")
+                self.wfile.flush()
+                last_beat = time.time()
+                while True:
+                    try:
+                        ev = q.get(timeout=5)
+                        self.wfile.write(b"data: " + json.dumps(ev).encode() + b"\n\n")
+                        self.wfile.flush()
+                    except queue.Empty:
+                        pass
+                    now = time.time()
+                    if now - last_beat >= 15:
+                        self.wfile.write(b":\n\n")   # heartbeat comment
+                        self.wfile.flush()
+                        last_beat = now
+            except (BrokenPipeError, ConnectionResetError):
+                pass  # client went away; fall through to unsubscribe
+            finally:
+                hub.unsubscribe(q)
+
         def do_GET(self):
             path = self.path.split("?", 1)[0]
             if path in ("/stats", "/status"):
@@ -406,6 +514,8 @@ def make_handler(status, data_dir, replay_script, models_dir):
             elif path == "/live.json":
                 self._send(200, json.dumps(_live_feed(data_dir)),
                            "application/json; charset=utf-8")
+            elif path == "/live.stream":
+                self._stream()
             elif path == "/live":
                 self._send(200, _live_page())
             elif path.startswith("/models/"):
@@ -444,7 +554,11 @@ def make_handler(status, data_dir, replay_script, models_dir):
     return Handler
 
 
-def serve(port, status, data_dir, replay_script, models_dir):
-    httpd = socketserver.ThreadingTCPServer(("", port), make_handler(status, data_dir, replay_script, models_dir))
-    httpd.daemon_threads = True
+class _Server(socketserver.ThreadingMixIn, http.server.HTTPServer):
+    daemon_threads = True
+    allow_reuse_address = True
+
+
+def serve(port, status, data_dir, replay_script, models_dir, hub):
+    httpd = _Server(("", port), make_handler(status, data_dir, replay_script, models_dir, hub))
     httpd.serve_forever()

@@ -52,8 +52,15 @@ def collect(store: Store, ddb: DDB, site: Site = GRANSDEN,
     return n
 
 
+def _label_for(dev) -> str:
+    """Human label from a DDB device (registration [CN]), or empty if unknown."""
+    if dev and dev.registration:
+        return dev.registration + (f" [{dev.cn}]" if dev.cn else "")
+    return ""
+
+
 def watch(ddb: DDB, max_seconds: int | None = None, commit_every: int = 100,
-          status: dict | None = None) -> int:
+          status: dict | None = None, hub=None) -> int:
     """Buddy-follow daemon.
 
     Subscribe to a catch circle around the field. When an aircraft is seen low
@@ -61,7 +68,34 @@ def watch(ddb: DDB, max_seconds: int | None = None, commit_every: int = 100,
     launch from the field, start following it anywhere via a live buddy filter,
     and store its whole flight (incl. the buffered launch roll) until it lands.
     Only followed aircraft are stored, into year-partitioned SQLite files.
+
+    If `hub` is given, publish a lightweight event per stored fix for the live
+    web view (non-blocking; a slow browser can never stall this loop).
     """
+    # Live-event helpers live in webapp; import lazily so a headless run needn't touch it.
+    if hub is not None:
+        from .webapp import live_color, live_height_m, _live_model
+    else:
+        live_color = live_height_m = _live_model = None
+
+    def _publish(b, dev):
+        if hub is None:
+            return
+        label = _label_for(dev) or b.address
+        model_str = dev.model if dev else ""
+        ac_type = (dev.aircraft_type if dev else None) or b.aircraft_type or ""
+        hub.publish({
+            "addr": b.address,
+            "name": label,
+            "label": label,
+            "lon": round(b.lon, 6),
+            "lat": round(b.lat, 6),
+            "height_m": live_height_m(b.altitude_ft),
+            "ts": int(b.ts.timestamp()),
+            "model": _live_model(model_str, ac_type),
+            "color": live_color(b.address),
+        })
+
     ceiling = GRANSDEN.elevation_ft + config.LAUNCH_MAX_AGL_FT
     base_filter = f"r/{config.LAUNCH_LAT}/{config.LAUNCH_LON}/{config.CATCH_RADIUS_KM}"
     owned: set[str] = set()          # source callsigns we're following
@@ -99,8 +133,10 @@ def watch(ddb: DDB, max_seconds: int | None = None, commit_every: int = 100,
             last_seen[b.source] = now
 
             if b.source in owned:
-                store.add_fix(b); store.upsert_device(b, ddb.lookup(b.address))
+                dev = ddb.lookup(b.address)
+                store.add_fix(b); store.upsert_device(b, dev)
                 n += 1
+                _publish(b, dev)
             else:
                 buf = buffers[b.source]; buf.append(b)
                 cutoff = b.ts.timestamp() - config.LAUNCH_BUFFER_S
@@ -114,7 +150,9 @@ def watch(ddb: DDB, max_seconds: int | None = None, commit_every: int = 100,
                     # armed at the field then climbed away -> a launch from Gransden
                     owned.add(b.source); armed.discard(b.source)
                     for pb in buf:
-                        store.add_fix(pb); store.upsert_device(pb, ddb.lookup(pb.address))
+                        pdev = ddb.lookup(pb.address)
+                        store.add_fix(pb); store.upsert_device(pb, pdev)
+                        _publish(pb, pdev)
                     n += len(buf); buffers.pop(b.source, None)
                     client.set_filter(build_filter())
                     logger.info("launch: following %s (%d aircraft)", b.source, len(owned))
