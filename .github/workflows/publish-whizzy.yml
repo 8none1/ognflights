@@ -1,0 +1,60 @@
+name: Publish to whizzy.org
+
+# Manual only: publishes the built replays in site/flights/ to the website repo
+# (8none1.github.io), which serves them at www.whizzy.org/flights/ and deploys
+# via GitHub Pages. workflow_dispatch requires write access to this repo, so only
+# collaborators (i.e. you) can trigger it.
+#
+# One-time setup: a write deploy key on 8none1.github.io whose private half is
+# stored here as the WHIZZY_DEPLOY_KEY secret.
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-whizzy
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout ognflights (source of built site/)
+        uses: actions/checkout@v4
+
+      - name: Configure deploy key
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "${{ secrets.WHIZZY_DEPLOY_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -t ed25519,rsa github.com >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Publish to website repo
+        run: |
+          set -euo pipefail
+          export GIT_SSH_COMMAND="ssh -i $HOME/.ssh/deploy_key -o IdentitiesOnly=yes"
+
+          if [ -z "$(ls site/flights/*.html 2>/dev/null)" ]; then
+            echo "No built pages in site/flights/ - build them first."; exit 1
+          fi
+
+          git clone --depth 1 git@github.com:8none1/8none1.github.io.git website
+          mkdir -p website/flights/models
+          cp site/flights/*.html          website/flights/
+          cp replay/models/*.glb          website/flights/models/
+          cp replay/models/NOTICE.md      website/flights/models/ 2>/dev/null || true
+
+          cd website
+          git config user.name  "ognflights publish"
+          git config user.email "actions@users.noreply.github.com"
+          git add flights/
+          if git diff --cached --quiet; then
+            echo "Nothing changed; website already up to date."
+            exit 0
+          fi
+          git commit -m "Publish replays from ognflights@${GITHUB_SHA::7}"
+          git push origin master
+          echo "Published. GitHub Pages will deploy shortly."

@@ -11,3 +11,6 @@ ddb_cache.json
 
 # generated replay output (scratch); the generator lives in replay/, models in replay/models/
 out/
+
+# local model copy/symlink for previewing site/ (published from replay/models)
+site/flights/models/

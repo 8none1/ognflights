@@ -95,12 +95,24 @@ Models live in `replay/models/` (glTF, GPLv2 from FlightAirMap - see
 `replay/models/NOTICE.md`) and are referenced by URL so the browser caches them
 across pages.
 
-**Publishing:** the generated `*.html` plus the `models/` folder are copied to a
-separate static-hosting repo (the personal website) under `flights/`, served at a
-public URL. That website is only a *publishing target* - all project code, models
-and CI live here. The Cesium version is pinned in the `CES` constant of
-`make_replay.py`; a weekly GitHub Action (`.github/workflows/cesium-version-check.yml`)
-opens an issue when a newer Cesium is released.
+**Publishing:** build the pages into `site/flights/` (which is tracked), commit,
+then run the **Publish to whizzy.org** action (`workflow_dispatch`, so only repo
+collaborators can trigger it). It copies `site/flights/*.html` plus the models
+into the website repo (`8none1.github.io`) under `flights/`, which serves them at
+www.whizzy.org/flights/ via GitHub Pages. That website is only a *publishing
+target* - all project code, models and CI live here.
+
+The build itself runs locally because it reads the local SQLite capture, which
+isn't in the cloud (GitHub runners are ephemeral and can't run the always-on
+collector). Full automation would live on the always-on box (perceptron), not
+github.com.
+
+One-time setup for the publish action: a **write deploy key** on `8none1.github.io`
+whose private half is stored here as the `WHIZZY_DEPLOY_KEY` Actions secret.
+
+The Cesium version is pinned in the `CES` constant of `make_replay.py`; a weekly
+GitHub Action (`.github/workflows/cesium-version-check.yml`) opens an issue when a
+newer Cesium is released.
 
 ## Configuration
 
@@ -142,3 +154,6 @@ To do (rough priority):
    on `earth` is a stopgap that filters by aircraft type.)
 3. Tune the winch/aerotow classifier against more known launches.
 4. Optional: local-time display, daily auto-export, a small dashboard.
+5. **Live mode** - stream directly from OGN and update the Cesium map/tracks in
+   real time (aircraft move as beacons arrive), instead of replaying a stored day.
+   Needs the collector running continuously plus a push/poll path to the browser.
