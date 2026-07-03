@@ -142,21 +142,35 @@ const leg=[`<b>${DATA.title}</b><br><span class="hint">${DATA.flights.length} fl
     <br><label style="cursor:pointer"><input type="checkbox" id="nightsky" checked> night sky</label>
     <label style="cursor:pointer;margin-left:8px"><input type="checkbox" id="placenames"> place names</label>
     <br><button id="resetview" style="cursor:pointer;margin-top:4px">reset view</button></div>`];
-DATA.legend.forEach(a=>leg.push(`<span class="sw" style="background:${a.color}"></span>${a.label} (${a.n})<br>`));
+if(DATA.legend.length>1) leg.push(`<div class="hint" style="margin-top:4px">show: <a href="#" id="acAll" style="color:#8cf">all</a> / <a href="#" id="acNone" style="color:#8cf">none</a></div>`);
+DATA.legend.forEach((a,i)=>leg.push(`<label style="cursor:pointer;display:block"><input type="checkbox" class="acft" data-ai="${i}" checked> <span class="sw" style="background:${a.color}"></span>${a.label} (${a.n})</label>`));
 leg.push(`<div id="models" class="hint" style="margin-top:6px"></div>`);
 leg.push(`<div class="hint" style="margin-top:6px">3D models: <a style="color:#8cf" href="https://github.com/Ysurac/FlightAirMap-3dmodels">FlightAirMap</a> (GPLv2)</div>`);
 document.getElementById("legend").innerHTML=leg.join("");
 
+// per-aircraft visibility (index matches DATA.legend); each flight knows its aircraft via fl.ai
+const aircraftOn=DATA.legend.map(()=>true);
+const flightAi=DATA.flights.map(f=>f.ai);
 // trail modes: full = whole track; active = flown tail of airborne gliders; off = none.
 // "by speed" recolours the full track (slow=dim blue, fast=bright yellow); active tail stays per-aircraft.
 function applyTrails(){
   const m=document.querySelector('input[name=tm]:checked').value;
   const speed=document.getElementById("speedcol").checked;
-  trails.forEach(t=>{t.show=(m==="full" && !speed);});
-  speedTrails.forEach(p=>{p.show=(m==="full" && speed);});
-  planes.forEach(p=>{p.path.show=(m!=="off");});
+  planes.forEach((p,i)=>{const on=aircraftOn[flightAi[i]]; p.show=on; p.path.show=on && m!=="off";});
+  trails.forEach((t,i)=>{t.show=aircraftOn[flightAi[i]] && m==="full" && !speed;});
+  speedTrails.forEach((p,i)=>{p.show=aircraftOn[flightAi[i]] && m==="full" && speed;});
   document.getElementById("speedscale").style.display=(m==="full"&&speed)?"block":"none";
 }
+document.querySelectorAll('input.acft').forEach(cb=>cb.addEventListener("change",e=>{
+  aircraftOn[+e.target.dataset.ai]=e.target.checked; applyTrails();
+}));
+function setAllAircraft(on){
+  aircraftOn.fill(on);
+  document.querySelectorAll('input.acft').forEach(cb=>{cb.checked=on;});
+  applyTrails();
+}
+if(document.getElementById("acAll")) document.getElementById("acAll").addEventListener("click",e=>{e.preventDefault();setAllAircraft(true);});
+if(document.getElementById("acNone")) document.getElementById("acNone").addEventListener("click",e=>{e.preventDefault();setAllAircraft(false);});
 document.querySelectorAll('input[name=tm]').forEach(r=>r.addEventListener("change",applyTrails));
 document.getElementById("speedcol").addEventListener("change",function(){
   if(this.checked) document.querySelector('input[name=tm][value="full"]').checked=true;  // speed colours the full track
@@ -274,6 +288,7 @@ def collect(store, day, reg_spec, gliders):
         _, model_str = store.device_label(addr)
         mk = classify_model(model_str, ac_type)
         col = PALETTE[ai % len(PALETTE)]; ai += 1
+        aidx = len(legend)   # index this aircraft will take in the legend (for per-aircraft toggles)
         used = 0
         for i, fl in enumerate(fls, 1):
             if want_idx and i not in want_idx:
@@ -288,7 +303,7 @@ def collect(store, day, reg_spec, gliders):
                        for f in fl.fixes]
             spd = [round(v) for v in ground_speeds_kt(fl.fixes)]
             flights.append({"name": f"{label} F{i} {t0}Z", "color": col, "mk": mk,
-                            "samples": samples, "spd": spd})
+                            "ai": aidx, "samples": samples, "spd": spd})
             used += 1
         if used:
             legend.append({"label": label, "color": col, "n": used})
