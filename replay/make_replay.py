@@ -168,6 +168,7 @@ function applyTrails(){
   trails.forEach((t,i)=>{t.show=aircraftOn[flightAi[i]] && m==="full" && !speed;});
   Object.keys(speedPrims).forEach(ai=>{speedPrims[ai].show=aircraftOn[+ai] && m==="full" && speed;});
   document.getElementById("speedscale").style.display=(m==="full"&&speed)?"block":"none";
+  viewer.scene.requestRender();   // requestRenderMode is on, so ask for a redraw after toggling
 }
 document.querySelectorAll('input.acft').forEach(cb=>cb.addEventListener("change",e=>{
   aircraftOn[+e.target.dataset.ai]=e.target.checked; applyTrails();
@@ -193,13 +194,29 @@ function setNight(on){
   viewer.scene.skyAtmosphere.show=!on;
   viewer.scene.globe.showGroundAtmosphere=!on;
   viewer.scene.backgroundColor=Cesium.Color.BLACK;
+  viewer.scene.requestRender();
 }
 document.getElementById("nightsky").addEventListener("change",e=>setNight(e.target.checked));
 setNight(true);
 
 // place names overlay + reset-view button
-document.getElementById("placenames").addEventListener("change",e=>{labelLayer.show=e.target.checked;});
+document.getElementById("placenames").addEventListener("change",e=>{labelLayer.show=e.target.checked; viewer.scene.requestRender();});
 document.getElementById("resetview").addEventListener("click",function(){goHome(); this.blur();});
+
+// hover tooltip: show the aircraft name/registration under the cursor
+const _tip=document.createElement("div");
+_tip.style.cssText="position:fixed;z-index:30;pointer-events:none;display:none;background:rgba(0,0,0,.8);"
+  +"color:#fff;font:12px sans-serif;padding:2px 7px;border-radius:4px;white-space:nowrap";
+document.body.appendChild(_tip);
+new Cesium.ScreenSpaceEventHandler(viewer.scene.canvas).setInputAction(function(mv){
+  const p=viewer.scene.pick(mv.endPosition);
+  const name=p&&p.id&&p.id.name;
+  if(name){
+    _tip.textContent=name.replace(/ trail$/,"");
+    _tip.style.left=(mv.endPosition.x+14)+"px"; _tip.style.top=(mv.endPosition.y+10)+"px";
+    _tip.style.display="block";
+  } else { _tip.style.display="none"; }
+}, Cesium.ScreenSpaceEventType.MOUSE_MOVE);
 
 // opening camera (position = X/Y/Z, angle = heading/pitch)
 function goHome(){
