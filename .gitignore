@@ -17,3 +17,7 @@ site/flights/models/
 
 # local keyed/scratch test pages (never commit)
 site/flights/_*
+
+# deploy secrets: the publish worker's SSH deploy key must NEVER be committed
+secrets/
+deploy_key*

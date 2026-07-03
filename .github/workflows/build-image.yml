@@ -10,6 +10,7 @@ on:
       - "Dockerfile"
       - "ognflights/**"
       - "replay/**"
+      - "publish/**"
       - "cli.py"
       - ".github/workflows/build-image.yml"
   workflow_dispatch: {}

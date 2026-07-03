@@ -55,6 +55,10 @@ def cmd_watch(a):
             args=(a.port, status, config.DATA_DIR, replay_script, models_dir, hub),
             daemon=True).start()
         logging.info("web server on :%d  (/ = home, /replay, /live, /stats)", a.port)
+    # Hourly public-data publisher (off unless OGNFLIGHTS_PUBLISH=1). Purely additive:
+    # a daemon thread, fully isolated so a publish failure can never stall capture.
+    from publish.worker import start_worker
+    start_worker()
     n = watch(ddb, max_seconds=a.minutes * 60 if a.minutes else None,
               status=status, hub=hub)
     print(f"stored {n} fixes")

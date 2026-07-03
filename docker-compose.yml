@@ -11,3 +11,13 @@ services:
       - "8477:8080"          # http://perceptron:8477/  (replay)  and /stats  -- change host port if it clashes
     volumes:
       - ./data:/app/data
+      - ./secrets/deploy_key:/keys/deploy_key:ro   # SSH deploy key for the public-data push (never in the image)
+    environment:
+      # Hourly public-data publisher. OFF by default; set OGNFLIGHTS_PUBLISH=1 to enable.
+      OGNFLIGHTS_PUBLISH: "1"
+      OGNFLIGHTS_PUBLISH_REMOTE: "git@github.com:8none1/ognflights.git"
+      OGNFLIGHTS_PUBLISH_BRANCH: "public-data"
+      OGNFLIGHTS_DEPLOY_KEY: "/keys/deploy_key"
+      OGNFLIGHTS_PUBLISH_DAYS: "7"
+      OGNFLIGHTS_PUBLISH_INTERVAL_S: "3600"
+      OGNFLIGHTS_PUBLISH_WORKDIR: "/app/data/.publish-repo"
