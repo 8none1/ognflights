@@ -52,7 +52,8 @@ def collect(store: Store, ddb: DDB, site: Site = GRANSDEN,
     return n
 
 
-def watch(ddb: DDB, max_seconds: int | None = None, commit_every: int = 100) -> int:
+def watch(ddb: DDB, max_seconds: int | None = None, commit_every: int = 100,
+          status: dict | None = None) -> int:
     """Buddy-follow daemon.
 
     Subscribe to a catch circle around the field. When an aircraft is seen low
@@ -77,9 +78,16 @@ def watch(ddb: DDB, max_seconds: int | None = None, commit_every: int = 100) -> 
     start = time.time()
     n = 0
     last_trim = start
+    if status is not None:
+        status.update(started=start, connected=False, following=0, stored=0, last_beacon=None)
     try:
         for b in client.beacons():
             now = time.time()
+            if status is not None:
+                status["connected"] = True
+                status["last_beacon"] = now
+                status["following"] = len(owned)
+                status["stored"] = n
             y = datetime.now(timezone.utc).year
             if y != year:
                 store.commit(); store.close()

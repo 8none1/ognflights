@@ -41,7 +41,19 @@ def _day_store(a):
 def cmd_watch(a):
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     ddb = DDB(); ddb.load()
-    n = watch(ddb, max_seconds=a.minutes * 60 if a.minutes else None)
+    status = {}
+    if a.serve:
+        import threading
+        from ognflights import config, webapp
+        repo = os.path.dirname(os.path.abspath(__file__))
+        replay_script = os.path.join(repo, "replay", "make_replay.py")
+        models_dir = os.path.join(repo, "replay", "models")
+        threading.Thread(
+            target=webapp.serve,
+            args=(a.port, status, config.DATA_DIR, replay_script, models_dir),
+            daemon=True).start()
+        logging.info("web server on :%d  (/ = replay, /stats = health)", a.port)
+    n = watch(ddb, max_seconds=a.minutes * 60 if a.minutes else None, status=status)
     print(f"stored {n} fixes")
 
 
@@ -154,6 +166,8 @@ def main():
 
     w = sub.add_parser("watch", help="buddy-follow daemon: track aircraft that launch from the field, anywhere")
     w.add_argument("--minutes", type=int, help="stop after N minutes (default: run forever)")
+    w.add_argument("--serve", action="store_true", help="also serve the replay + /stats page over HTTP")
+    w.add_argument("--port", type=int, default=8080, help="HTTP port for --serve (default 8080)")
     w.set_defaults(func=cmd_watch)
 
     ac = sub.add_parser("aircraft", help="list aircraft seen on a day")

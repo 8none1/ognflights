@@ -42,9 +42,14 @@ FLARM/ADS-B on aircraft  ->  OGN ground receivers (APRS-IS)  ->  ognflights
 ```bash
 # 1. Capture: the buddy-follow daemon. Detects launches from the field and follows
 #    each launched aircraft anywhere until it lands. Writes data/ogn-YYYY.sqlite.
-python3 cli.py watch                 # runs until stopped (reconnects automatically)
-python3 cli.py watch --minutes 5     # cap it for a quick test
-#    (deploy it on perceptron with Docker: `docker compose up -d --build`)
+python3 cli.py watch                        # runs until stopped (reconnects automatically)
+python3 cli.py watch --serve --port 8080    # also serve the dashboard (see below)
+python3 cli.py watch --minutes 5            # cap it for a quick test
+#    Deploy on perceptron with Docker (serves the dashboard on host port 8477):
+#      docker compose pull && docker compose up -d
+#    Dashboard:  http://perceptron:8477/       -> today's all-gliders 3D replay
+#                http://perceptron:8477/stats  -> live health + capture statistics
+#    Images are built and published to GHCR by CI on push to main.
 
 #    ...legacy simple area capture (stores everything within --radius):
 python3 cli.py collect --minutes 5

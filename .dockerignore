@@ -2,7 +2,6 @@
 data
 out
 site
-replay
 __pycache__
 *.pyc
 .venv
