@@ -20,7 +20,7 @@ FILTER_RADIUS_KM = 60           # area filter around the site
 
 # Flight detection
 # An aircraft is "on the ground" below this height above the airfield.
-GROUND_AGL_FT = 20
+GROUND_AGL_FT = 0
 # A flight must climb at least this far above ground and last at least this long.
 MIN_FLIGHT_PEAK_AGL_FT = 150
 MIN_FLIGHT_SECONDS = 90

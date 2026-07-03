@@ -275,8 +275,13 @@ def collect(store, day, reg_spec, gliders):
             if want_idx and i not in want_idx:
                 continue
             t0 = datetime.fromtimestamp(fl.start, tz=timezone.utc).strftime("%H:%M")
+            # Height ABOVE THE AIRFIELD, not MSL: the replay has no terrain, so Cesium draws
+            # the ground at the sea-level ellipsoid. Plotting MSL would float every aircraft
+            # ~field-elevation too high. Subtract field elevation so ground level sits on the map.
             samples = [[datetime.fromtimestamp(f.ts, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-                        round(f.lon, 6), round(f.lat, 6), round(f.alt_ft * FT_TO_M, 1)] for f in fl.fixes]
+                        round(f.lon, 6), round(f.lat, 6),
+                        round(max(0.0, (f.alt_ft - GRANSDEN.elevation_ft) * FT_TO_M), 1)]
+                       for f in fl.fixes]
             spd = [round(v) for v in ground_speeds_kt(fl.fixes)]
             flights.append({"name": f"{label} F{i} {t0}Z", "color": col, "mk": mk,
                             "samples": samples, "spd": spd})
