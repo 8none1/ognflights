@@ -44,3 +44,6 @@ MIN_FLIGHT_PEAK_AGL_FT = 150
 MIN_FLIGHT_SECONDS = 90
 # Gap (no fixes) longer than this splits a track, even without a ground fix.
 MAX_FIX_GAP_SECONDS = 120
+# ...unless the aircraft is still airborne on both sides of the gap (a receiver-coverage
+# dropout, not a landing): bridge those up to this long so a flight isn't falsely split.
+BRIDGE_MAX_GAP_SECONDS = 1800

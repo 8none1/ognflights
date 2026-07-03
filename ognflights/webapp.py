@@ -101,7 +101,7 @@ def _render_replay(day: datetime, replay_script: str, data_dir: str) -> str | No
     path_res = min(15, max(1, n_ac // 3))
     tmp = tempfile.mktemp(suffix=".html")
     cmd = ["python3", replay_script, "--out", tmp, "--day", key,
-           "--title", f"All gliders {key}", "--gliders", "--by-aircraft", "--mult", "60",
+           "--title", f"All gliders {key}", "--gliders", "--mult", "60",
            "--path-resolution", str(path_res)]
     if simplify:
         cmd += ["--simplify", str(simplify)]

@@ -6,8 +6,8 @@ and ground noise are filtered out.
 """
 from dataclasses import dataclass, field
 
-from .config import (GROUND_AGL_FT, MAX_FIX_GAP_SECONDS, MIN_FLIGHT_PEAK_AGL_FT,
-                     MIN_FLIGHT_SECONDS, Site)
+from .config import (BRIDGE_MAX_GAP_SECONDS, GROUND_AGL_FT, MAX_FIX_GAP_SECONDS,
+                     MIN_FLIGHT_PEAK_AGL_FT, MIN_FLIGHT_SECONDS, Site)
 from .store import Fix
 
 
@@ -34,7 +34,11 @@ def segment(address: str, fixes: list[Fix], site: Site) -> list[Flight]:
     for f in fixes:
         airborne = f.alt_ft >= ground
         gap = prev_ts is not None and (f.ts - prev_ts) > MAX_FIX_GAP_SECONDS
-        if cur is not None and gap:
+        # Bridge coverage dropouts: don't split if still airborne both sides and the gap
+        # is not enormous (the position just interpolates across). A gap while on the
+        # ground, or an enormous gap, still ends the flight (a real landing).
+        bridge = airborne and prev_ts is not None and (f.ts - prev_ts) <= BRIDGE_MAX_GAP_SECONDS
+        if cur is not None and gap and not bridge:
             flights.append(cur); cur = None
         if airborne:
             if cur is None:
