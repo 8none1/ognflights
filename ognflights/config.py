@@ -42,6 +42,15 @@ GROUND_AGL_FT = 0
 # A flight must climb at least this far above ground and last at least this long.
 MIN_FLIGHT_PEAK_AGL_FT = 150
 MIN_FLIGHT_SECONDS = 90
+# Landed end condition: end a flight once the aircraft has been both LOW and
+# STATIONARY for a continuous run of at least LANDED_STATIONARY_SECONDS. This ends
+# a flight cleanly at touchdown even when the glider then sits at ~field elevation
+# (which reads as "airborne" while GROUND_AGL_FT is 0), and splits a land-then-relaunch
+# into two flights. The flight is trimmed to the FIRST fix of the stationary run.
+LANDED_MAX_AGL_FT = 100         # "low" = height above field elevation below this
+LANDED_SPEED_KT = 5             # "stationary" = ground speed at/near zero (kt)
+LANDED_STATIONARY_SECONDS = 60  # low+stationary must persist this long to count as landed
+
 # Gap (no fixes) longer than this splits a track, even without a ground fix.
 MAX_FIX_GAP_SECONDS = 120
 # ...unless the aircraft is still airborne on both sides of the gap (a receiver-coverage
