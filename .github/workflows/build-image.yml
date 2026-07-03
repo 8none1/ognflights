@@ -9,6 +9,7 @@ on:
     paths:
       - "Dockerfile"
       - "ognflights/**"
+      - "replay/**"
       - "cli.py"
       - ".github/workflows/build-image.yml"
   workflow_dispatch: {}
