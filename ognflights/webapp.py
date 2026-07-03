@@ -254,7 +254,8 @@ LIVE_HTML = r"""<!DOCTYPE html>
 font:12px sans-serif;padding:8px 10px;border-radius:6px;max-height:90vh;overflow:auto;min-width:150px}
 #legend b{font-size:14px}
 .sw{display:inline-block;width:12px;height:12px;margin-right:6px;border-radius:2px;vertical-align:middle}
-.hint{opacity:.6;font-size:11px}</style>
+.hint{opacity:.6;font-size:11px}
+#legend label{cursor:pointer}</style>
 </head><body><div id="c"></div><div id="legend"><b>Live - Gransden</b><br><span class="hint">connecting...</span></div>
 <script>
 const MODELS=__MODELS__;      // {glider:"models/AS21.glb", dr400:"models/DR40.glb"}
@@ -279,6 +280,7 @@ viewer.camera.setView({
 const GRACE_MS=60000;    // remove an aircraft this long after its last event
 const MAX_TRAIL=600;     // bounded recent-points trail per aircraft
 const ac={};             // address -> {plane, trail, color, name, model, pts[], lastSeen}
+let trailsOn=true;       // toggled by the "Trail" checkbox in the legend
 
 // create-or-update an aircraft entity from a position (lon,lat,height_m)
 function ensure(addr,name,color,model){
@@ -297,11 +299,17 @@ function ensure(addr,name,color,model){
       silhouetteColor:col, silhouetteSize:1.5}
   });
   e.trail=viewer.entities.add({
-    name:name+" trail",
+    name:name+" trail", show:trailsOn,
     polyline:{positions:new Cesium.CallbackProperty(()=>e._trail,false),
       width:2, material:col.withAlpha(0.55)}
   });
   return e;
+}
+
+// show/hide every aircraft's trail without touching planes/positions/legend
+function applyTrails(){
+  for(const addr of Object.keys(ac)) ac[addr].trail.show=trailsOn;
+  if(viewer.scene.requestRenderMode) viewer.scene.requestRender();
 }
 
 // append one [lon,lat,height_m] point, keeping the trail bounded
@@ -349,7 +357,11 @@ function renderLegend(){
   const rows=items.map(e=>`<div><span class="sw" style="background:${e.color}"></span>${e.name}</div>`);
   const n=items.length;
   const head=`<b>Live - Gransden</b><br><span class="hint">${n} aircraft airborne</span>`;
-  document.getElementById("legend").innerHTML=head+(rows.length?"<br>"+rows.join(""):"");
+  const ctrl=`<div style="margin:4px 0;user-select:none"><label>`
+    +`<input type="checkbox" id="traillbl"${trailsOn?" checked":""}> Trail</label></div>`;
+  document.getElementById("legend").innerHTML=head+ctrl+(rows.length?rows.join(""):"");
+  const cb=document.getElementById("traillbl");
+  if(cb) cb.addEventListener("change",e=>{ trailsOn=e.target.checked; applyTrails(); });
 }
 
 // 1) paint the current picture once, then 2) open the live event stream.
