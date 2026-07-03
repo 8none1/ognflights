@@ -41,10 +41,17 @@ class Fix:
 
 
 class Store:
-    def __init__(self, path: str = "data/ogn.sqlite"):
+    def __init__(self, path: str = "data/ogn.sqlite", read_only: bool = False):
         import os
-        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
         self.path = path
+        self.read_only = read_only
+        if read_only:
+            # Open read-only (immutable=0 so WAL commits from the live collector are still
+            # visible). Never creates the file, never writes: safe against the running daemon.
+            uri = f"file:{os.path.abspath(path)}?mode=ro"
+            self.db = sqlite3.connect(uri, uri=True)
+            return
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
         self.db = sqlite3.connect(path)
         # WAL: lets exports read while the collector writes; NORMAL sync is durable enough.
         self.db.execute("PRAGMA journal_mode=WAL")
@@ -135,6 +142,6 @@ def year_file(year: int, data_dir: str | None = None) -> str:
     return os.path.join(data_dir or DATA_DIR, f"ogn-{year}.sqlite")
 
 
-def store_for_day(day: datetime, data_dir: str | None = None) -> "Store":
+def store_for_day(day: datetime, data_dir: str | None = None, read_only: bool = False) -> "Store":
     """Open the SQLite file for the calendar year containing `day`."""
-    return Store(year_file(day.year, data_dir))
+    return Store(year_file(day.year, data_dir), read_only=read_only)

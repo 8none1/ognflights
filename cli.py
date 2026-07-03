@@ -138,6 +138,22 @@ def cmd_backfill(a):
     print(f"backfilled {n} fixes from CGC for {a.day}")
 
 
+def cmd_publish(a):
+    """Build the public per-day JSON + manifest for the last N days (Phase 1 pipeline)."""
+    from datetime import timezone as _tz
+    from publish.sync_public import sync, _commit
+    from ognflights.config import DATA_DIR
+    today = _day(a.today) if a.today else None
+    written, manifest = sync(a.out, data_dir=a.data_dir or DATA_DIR, days=a.days,
+                             models_url=a.models_url, today=today)
+    print(f"days with flights: {len(manifest['days'])}; files written: "
+          f"{', '.join(written) if written else '(none - all up to date)'}")
+    for d in manifest["days"]:
+        print(f"  {d['day']}  {d['flights']} flights, {d['aircraft']} aircraft")
+    if a.commit:
+        _commit(a.out, push=a.push)
+
+
 def cmd_earth(a):
     """Dump every aircraft's full track for a day into one KML."""
     store = _day_store(a)
@@ -196,6 +212,16 @@ def main():
     bf.add_argument("--day", required=True)
     bf.add_argument("--cookie", help="CGC session cookie (else CAMGLIDING_COOKIE env)")
     bf.set_defaults(func=cmd_backfill)
+
+    pub = sub.add_parser("publish", help="build public per-day JSON + manifest for the dashboard")
+    pub.add_argument("--out", required=True, help="output dir (or a public-data git worktree)")
+    pub.add_argument("--data-dir", help="dir holding ogn-YYYY.sqlite (default: config DATA_DIR)")
+    pub.add_argument("--days", type=int, default=7, help="how many days back to publish (default 7)")
+    pub.add_argument("--models-url", default="models", help="relative URL to the .glb models")
+    pub.add_argument("--today", help="override 'today' as YYYY-MM-DD (for testing)")
+    pub.add_argument("--commit", action="store_true", help="git add/commit in --out (public-data worktree)")
+    pub.add_argument("--push", action="store_true", help="with --commit, also push (Phase 2 only)")
+    pub.set_defaults(func=cmd_publish)
 
     ea = sub.add_parser("earth", help="dump all tracks for a day into one KML")
     ea.add_argument("--day", required=True)

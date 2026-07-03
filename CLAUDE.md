@@ -58,8 +58,37 @@ buddy filter until it lands. Type-agnostic; stores only our flights into
 **year-partitioned** SQLite (`data/ogn-YYYY.sqlite`, WAL). Ships as a **Docker**
 container (`Dockerfile` + `docker-compose.yml`).
 
+**Public dashboard pipeline (Phase 1 built).** A public replay page lives on the
+static site (whizzy.org) showing the last 7 days with a day picker, full reg/CN
+labels, no live view, no stats. It updates hourly WITHOUT a Jekyll rebuild:
+perceptron (Phase 2) commits per-day `<YYYY-MM-DD>.json` + `manifest.json` to a
+dedicated **`public-data`** branch of this repo, and the page fetches them from
+`https://raw.githubusercontent.com/8none1/ognflights/public-data/` (raw sends
+`access-control-allow-origin: *`, so CORS works from whizzy.org; ~5 min cache).
+
+- `replay/make_replay.py` now has an **external-data mode**: `--external-data`
+  (page `fetch()`es its DATA), `--data-base <url>`, `--day-picker`, and a `--public`
+  shortcut (external + day picker + the raw base). Default stays **inline** so the
+  private `/replay` is unchanged. Build the public page:
+  `python3 replay/make_replay.py --out publish/public-index.html --public --day <any> --title "Gransden flights" --link-single --path-resolution 3` (saved copy in `publish/public-index.html`).
+- `publish/sync_public.py` (also `python3 cli.py publish --out DIR`): builds the
+  last N days' JSON + manifest, opens the year SQLite **read-only** (WAL-safe, does
+  not disturb the live collector), only rewrites changed files, prunes days outside
+  the window, and has `--commit`/`--push` for a `public-data` worktree (unused in
+  Phase 1; Phase 2 will push from perceptron).
+
+Recon for Phase 2: website repo is `/home/will/source/8none1.github.io` (Jekyll,
+branch `master`, CNAME www.whizzy.org, no `.nojekyll`; deploys via GitHub Actions
+`deploy.yml` on push to master). It already has a `flights/` dir with per-day HTML +
+`flights/models/*.glb` and `flights/index.html`; the public page would land there.
+Perceptron's `~/docker/ognflights` remote is **HTTPS with no push auth** (no
+credential helper, no `~/.netrc`, no `gh`, no token env) - Phase 2 must add a
+credential (a `gh` token or an SSH deploy key) before it can push `public-data`.
+
 Open items: (1) **deploy `watch` on perceptron** (`docker compose up -d --build`);
-(2) tune the winch/aerotow classifier; (3) optional live mode / dashboard.
+(2) tune the winch/aerotow classifier; (3) **Phase 2**: publish the public page to
+the website `flights/` dir, give perceptron push auth, and cron the hourly
+`cli.py publish --commit --push` into a `public-data` worktree.
 
 ## Conventions
 
