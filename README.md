@@ -67,6 +67,41 @@ python3 cli.py earth --day 2026-06-17 --out capture.kml [--gliders]
 The collector is meant to run continuously so it captures whole flying days. See
 `ognflights.service` for a systemd unit.
 
+## 3D replay (CesiumJS)
+
+`replay/make_replay.py` turns a day's flights into a **self-contained, static
+CesiumJS web page**: a 3D globe with time-animated aircraft you can play/scrub.
+No server, no account, no build step - just an HTML file.
+
+```bash
+# one aircraft's selected flights, opening on the speed-coloured full track
+python3 replay/make_replay.py --out out/gckfy.html --day 2026-07-01 \
+    --title "G-CKFY (my flights)" --reg "G-CKFY:1,2,3,6" --trail full --speed-colour
+
+# every glider/tug that flew that day
+python3 replay/make_replay.py --out out/all-gliders.html --day 2026-07-01 \
+    --title "All gliders" --gliders
+```
+
+Features: time slider; per-aircraft 3D models chosen from the CGC model string
+(gliders vs DR-400 tugs, see the `MODELS` registry); trail modes full / active /
+off; ground-speed-coloured trails (speed is derived from consecutive fixes, since
+the feed rarely supplies it); night-sky and place-names toggles; a reset-view
+button; `--home "lon,lat,height,heading,pitch"` opening camera (press **C** in the
+page to capture the current view); model yaw tuning (number keys pick a model,
+`[` / `]` rotate it, logged for `--yaw`).
+
+Models live in `replay/models/` (glTF, GPLv2 from FlightAirMap - see
+`replay/models/NOTICE.md`) and are referenced by URL so the browser caches them
+across pages.
+
+**Publishing:** the generated `*.html` plus the `models/` folder are copied to a
+separate static-hosting repo (the personal website) under `flights/`, served at a
+public URL. That website is only a *publishing target* - all project code, models
+and CI live here. The Cesium version is pinned in the `CES` constant of
+`make_replay.py`; a weekly GitHub Action (`.github/workflows/cesium-version-check.yml`)
+opens an issue when a newer Cesium is released.
+
 ## Configuration
 
 Edit `ognflights/config.py`:

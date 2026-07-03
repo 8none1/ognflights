@@ -1,0 +1,68 @@
+name: Cesium version check
+
+# Weekly check: is the Cesium version pinned in replay/make_replay.py behind the
+# latest release? If so, open an issue. The version lives in the `CES` constant
+# and is baked into every generated replay page.
+
+on:
+  schedule:
+    - cron: "0 8 * * 1"   # Mondays 08:00 UTC
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compare pinned vs latest Cesium
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          pinned=$(grep -o 'releases/[0-9.]\+/Build/Cesium' replay/make_replay.py \
+                   | grep -o '[0-9.]\+' | head -1 || true)
+          if [ -z "$pinned" ]; then
+            echo "No pinned Cesium version found in replay/make_replay.py; nothing to check."
+            exit 0
+          fi
+          latest=$(curl -fsSL https://registry.npmjs.org/cesium/latest | jq -r .version)
+          echo "pinned=$pinned  latest=$latest"
+
+          if [ "$pinned" = "$latest" ]; then
+            echo "Up to date."; exit 0
+          fi
+          newest=$(printf '%s\n%s\n' "$pinned" "$latest" | sort -V | tail -1)
+          if [ "$newest" = "$pinned" ]; then
+            echo "Pinned ($pinned) is not older than latest ($latest); nothing to do."; exit 0
+          fi
+
+          title="Cesium update available: $latest (using $pinned)"
+          existing=$(gh issue list --state open --search "in:title \"Cesium update available: $latest\"" \
+                     --json number --jq '.[0].number // empty')
+          if [ -n "$existing" ]; then
+            echo "Open issue #$existing already tracks $latest; nothing to do."; exit 0
+          fi
+
+          body=$(cat <<EOF
+          The replay generator pins Cesium **$pinned**, but the latest release is **$latest**.
+
+          Release notes: https://github.com/CesiumGS/cesium/releases
+
+          To upgrade:
+          1. Bump the \`CES\` constant version in \`replay/make_replay.py\`.
+          2. Regenerate the replays and re-copy the output into the website's \`flights/\`.
+          3. Test in a browser: imagery loads, models render/orient, timeline plays.
+             (Large jumps have breaking API changes, e.g. the Viewer \`imageryProvider\`
+             option and the ArcGIS/terrain async constructors, so verify before publishing.)
+
+          _Opened automatically by the weekly Cesium version check._
+          EOF
+          )
+          gh issue create --title "$title" --body "$body"
+          echo "Opened issue: $title"

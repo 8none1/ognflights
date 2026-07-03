@@ -8,3 +8,6 @@ ddb_cache.json
 *.gpx
 *.kml
 *.igc
+
+# generated replay output (scratch); the generator lives in replay/, models in replay/models/
+out/
