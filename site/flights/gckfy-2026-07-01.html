@@ -14,6 +14,7 @@ const HOME={"lon": -0.111439, "lat": 52.117911, "height": 2515.0, "heading": 0.7
 const MYAW={"glider": 0.0};          // {modelKey: radians} yaw offset per model; tune with number keys + [ ]
 const TRAILMODE="full";
 const SPEEDCOL=true;
+const VIEWLINK={"label": "View in 3D (photorealistic)", "url": "gckfy-3d-2026-07-01.html"};
 Cesium.Ion.defaultAccessToken="";
 const viewer=new Cesium.Viewer("c",{
   baseLayer:Cesium.ImageryLayer.fromProviderAsync(Cesium.ArcGisMapServerImageryProvider.fromUrl(
@@ -28,6 +29,15 @@ const labelLayer=Cesium.ImageryLayer.fromProviderAsync(
     "https://services.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer"));
 viewer.imageryLayers.add(labelLayer);
 labelLayer.show=false;
+
+// Optional Google Photorealistic 3D Tiles (real terrain + buildings). Key is injected at
+// build/publish time; if absent (empty or the "__..." placeholder) we stay on flat imagery.
+const GOOGLE_KEY="";
+if(GOOGLE_KEY && !GOOGLE_KEY.startsWith("__")){
+  Cesium.createGooglePhotorealistic3DTileset({key:GOOGLE_KEY})
+    .then(t=>{viewer.scene.primitives.add(t); viewer.scene.globe.show=false;})
+    .catch(e=>console.error("Google 3D Tiles failed to load:",e));
+}
 let tmin=null,tmax=null;
 const trails=[], planes=[], speedTrails=[];
 const SPD_LO=30, SPD_HI=110;   // knots mapped across the speed colour ramp
@@ -88,6 +98,7 @@ const leg=[`<b>${DATA.title}</b><br><span class="hint">${DATA.flights.length} fl
     <label style="cursor:pointer;margin-left:8px"><input type="checkbox" id="placenames"> place names</label>
     <br><button id="resetview" style="cursor:pointer;margin-top:4px">reset view</button></div>`];
 DATA.legend.forEach(a=>leg.push(`<span class="sw" style="background:${a.color}"></span>${a.label} (${a.n})<br>`));
+if(VIEWLINK && VIEWLINK.url) leg.push(`<div style="margin-top:6px"><a style="color:#8cf" href="${VIEWLINK.url}">${VIEWLINK.label} &rarr;</a></div>`);
 leg.push(`<div id="models" class="hint" style="margin-top:6px"></div>`);
 leg.push(`<div class="hint" style="margin-top:6px">3D models: <a style="color:#8cf" href="https://github.com/Ysurac/FlightAirMap-3dmodels">FlightAirMap</a> (GPLv2)</div>`);
 document.getElementById("legend").innerHTML=leg.join("");
