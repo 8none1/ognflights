@@ -20,8 +20,8 @@ import argparse, json, math, os, sys
 from datetime import datetime, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from ognflights.config import GRANSDEN
-from ognflights.flights import segment
+from ognflights.config import GRANSDEN, GROUND_AGL_FT, MIN_FLIGHT_PEAK_AGL_FT
+from ognflights.flights import Flight, segment
 from ognflights.store import Store, store_for_day
 
 FT_TO_M = 0.3048
@@ -322,7 +322,7 @@ def _rdp_keep(pts, eps):
     return [i for i in range(n) if keep[i]]
 
 
-def collect(store, day, reg_spec, gliders, simplify=0.0):
+def collect(store, day, reg_spec, gliders, simplify=0.0, by_aircraft=False):
     lo, hi = store.day_bounds(day)
     flights, legend, ai = [], [], 0
     want_reg, want_idx = None, None
@@ -337,9 +337,18 @@ def collect(store, day, reg_spec, gliders, simplify=0.0):
             continue
         if want_reg is None and gliders and ac_type not in GLIDERISH:
             continue
-        fls = segment(addr, store.fixes_for(addr, lo, hi), GRANSDEN)
-        if not fls:
-            continue
+        raw = store.fixes_for(addr, lo, hi)
+        if by_aircraft:
+            # one continuous track for the whole day: never vanishes across data gaps or
+            # brief ground stops (the aircraft just sits / glides across). Skip never-flew.
+            ground = GRANSDEN.elevation_ft + GROUND_AGL_FT
+            if not raw or (max(f.alt_ft for f in raw) - ground) < MIN_FLIGHT_PEAK_AGL_FT:
+                continue
+            fls = [Flight(address=addr, fixes=raw)]
+        else:
+            fls = segment(addr, raw, GRANSDEN)
+            if not fls:
+                continue
         _, model_str = store.device_label(addr)
         mk = classify_model(model_str, ac_type)
         col = PALETTE[ai % len(PALETTE)]; ai += 1
@@ -363,7 +372,8 @@ def collect(store, day, reg_spec, gliders, simplify=0.0):
                 keep = _rdp_keep(pts, simplify)
                 samples = [samples[i] for i in keep]
                 spd = [spd[i] for i in keep]
-            flights.append({"name": f"{label} F{i} {t0}Z", "color": col, "mk": mk,
+            name = label if by_aircraft else f"{label} F{i} {t0}Z"
+            flights.append({"name": name, "color": col, "mk": mk,
                             "ai": aidx, "samples": samples, "spd": spd})
             used += 1
         if used:
@@ -378,6 +388,9 @@ def main():
     p.add_argument("--title", required=True)
     p.add_argument("--reg", help='e.g. "G-CKFY" or "G-CKFY:1,2,3,6"')
     p.add_argument("--gliders", action="store_true", help="all glider/tug types")
+    p.add_argument("--by-aircraft", action="store_true",
+                   help="one continuous track per aircraft for the whole day (bridges data gaps and "
+                        "ground stops so trails never vanish); vs the default per-flight segmentation")
     p.add_argument("--mult", type=int, default=60, help="playback speed multiplier")
     p.add_argument("--simplify", type=float, default=0.0,
                    help="RDP trail simplification tolerance in metres (0 = full fidelity); "
@@ -399,7 +412,7 @@ def main():
 
     day = datetime.strptime(a.day, "%Y-%m-%d").replace(tzinfo=timezone.utc)
     store = Store(a.db) if a.db else store_for_day(day)
-    flights, legend = collect(store, day, a.reg, a.gliders, simplify=a.simplify)
+    flights, legend = collect(store, day, a.reg, a.gliders, simplify=a.simplify, by_aircraft=a.by_aircraft)
     if not flights:
         raise SystemExit("no flights matched")
 
