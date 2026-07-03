@@ -120,7 +120,7 @@ DATA.flights.forEach(fl=>{
     model:{uri:DATA.models[mk].url, minimumPixelSize:64, maximumScale:20000, scale:1,
       color:col, colorBlendMode:Cesium.ColorBlendMode.MIX, colorBlendAmount:0.5,
       silhouetteColor:col, silhouetteSize:1.5},
-    path:{resolution:1, material:col, width:3, leadTime:0, trailTime:100000}
+    path:{resolution:__PATHRES__, material:col, width:3, leadTime:0, trailTime:100000}
   }));
   const flat=fl.samples.flatMap(s=>[s[1],s[2],s[3]]);
   trails.push(viewer.entities.add({name:fl.name+" trail",
@@ -365,6 +365,9 @@ def main():
     p.add_argument("--simplify", type=float, default=0.0,
                    help="RDP trail simplification tolerance in metres (0 = full fidelity); "
                         "drops redundant straight-line points, keeps turns. Used for the busy dashboard view.")
+    p.add_argument("--path-resolution", type=float, default=1.0,
+                   help="seconds between comet-tail (path) samples; higher = cheaper per frame "
+                        "(the dashboard raises this with aircraft count). 1 = smooth, for single-aircraft replays.")
     p.add_argument("--trail", choices=["active", "full", "off"], default="active",
                    help="initial trail mode")
     p.add_argument("--speed-colour", action="store_true",
@@ -416,6 +419,7 @@ def main():
             .replace("__MYAW__", json.dumps(myaw))
             .replace("__TRAILMODE__", a.trail)
             .replace("__SPEEDCOL__", "true" if a.speed_colour else "false")
+            .replace("__PATHRES__", repr(a.path_resolution))
             .replace("__MULT__", str(a.mult)))
     with open(a.out, "w") as f:
         f.write(html)

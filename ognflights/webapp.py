@@ -97,9 +97,12 @@ def _render_replay(day: datetime, replay_script: str, data_dir: str) -> str | No
     # A handful of aircraft render full-fidelity; a busy day is thinned (turns preserved).
     n_ac = _aircraft_count(day, data_dir)
     simplify = max(0, min(60, (n_ac - 4) * 4))
+    # comet-tail sampling: coarser (cheaper per frame) the more aircraft are on screen.
+    path_res = min(15, max(1, n_ac // 3))
     tmp = tempfile.mktemp(suffix=".html")
     cmd = ["python3", replay_script, "--out", tmp, "--day", key,
-           "--title", f"All gliders {key}", "--gliders", "--mult", "60"]
+           "--title", f"All gliders {key}", "--gliders", "--mult", "60",
+           "--path-resolution", str(path_res)]
     if simplify:
         cmd += ["--simplify", str(simplify)]
     try:
