@@ -6,14 +6,17 @@
 
 Runs in a thread alongside the `watch` collector, sharing a status dict.
 """
+import glob
 import http.server
 import os
+import re
 import socketserver
 import subprocess
 import tempfile
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from urllib.parse import parse_qs, urlparse
 
 from .config import GRANSDEN
 from .flights import segment
@@ -24,8 +27,51 @@ _cache: dict[str, tuple[str, float]] = {}
 _cache_lock = threading.Lock()
 
 
+_DAY_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
 def _today() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _parse_day(query: str) -> datetime:
+    """?day=YYYY-MM-DD from the query string, defaulting to today (UTC). Validated."""
+    vals = parse_qs(query).get("day", [])
+    if vals and _DAY_RE.match(vals[0]):
+        try:
+            return datetime.strptime(vals[0], "%Y-%m-%d").replace(tzinfo=timezone.utc)
+        except ValueError:
+            pass
+    return _today()
+
+
+def _days_with_flights(data_dir: str, limit: int = 21) -> list[str]:
+    """Recent days (YYYY-MM-DD) that have stored fixes, newest first, across year files."""
+    days: set[str] = set()
+    for yf in glob.glob(os.path.join(data_dir, "ogn-*.sqlite")):
+        try:
+            s = Store(yf)
+            days.update(r[0] for r in s.db.execute(
+                "SELECT DISTINCT strftime('%Y-%m-%d', ts, 'unixepoch') FROM fixes"))
+            s.close()
+        except Exception:
+            pass
+    return sorted(days, reverse=True)[:limit]
+
+
+def _nav_html(day: datetime) -> str:
+    """A small fixed date-picker (prev / date / next) injected into the replay page."""
+    d = day.strftime("%Y-%m-%d")
+    prev = (day - timedelta(days=1)).strftime("%Y-%m-%d")
+    nxt = (day + timedelta(days=1)).strftime("%Y-%m-%d")
+    return (
+        '<div style="position:fixed;top:8px;left:50%;transform:translateX(-50%);z-index:20;'
+        'background:rgba(0,0,0,.6);color:#fff;padding:5px 9px;border-radius:6px;font:13px sans-serif">'
+        f'<a href="/?day={prev}" style="color:#8cf;text-decoration:none">&#9664;</a> '
+        f'<input type="date" value="{d}" onchange="location=\'/?day=\'+this.value" '
+        'style="font:13px sans-serif;background:#222;color:#fff;border:1px solid #555;border-radius:3px"> '
+        f'<a href="/?day={nxt}" style="color:#8cf;text-decoration:none">&#9654;</a>'
+        ' <a href="/stats" style="color:#8cf;margin-left:8px">stats</a></div>')
 
 
 def _render_replay(day: datetime, replay_script: str) -> str | None:
@@ -81,6 +127,7 @@ def _stats(status: dict, data_dir: str) -> dict:
     out["last_beacon_age_s"] = int(now - lb) if lb else None
     # healthy = connected and heard a beacon within the last 5 min
     out["healthy"] = bool(out["connected"] and lb and (now - lb) < 300)
+    out["days"] = _days_with_flights(data_dir)
     return out
 
 
@@ -105,15 +152,20 @@ def _stats_html(st: dict) -> str:
         ("DB size", f"{st['db_bytes']/1_048_576:.1f} MB"),
     ]
     body = "".join(f"<tr><th>{k}</th><td>{v}</td></tr>" for k, v in rows)
+    days = st.get("days", [])
+    daylinks = ("".join(f'<li><a href="/?day={d}">{d}</a></li>' for d in days)
+                if days else "<li class='hint'>none captured yet</li>")
     return f"""<!DOCTYPE html><html><head><meta charset="utf-8">
 <meta http-equiv="refresh" content="10"><title>ognflights status</title>
 <style>body{{font:15px/1.6 system-ui,sans-serif;max-width:520px;margin:2.5rem auto;padding:0 1rem;color:#222}}
 h1{{font-size:1.3rem}} .dot{{display:inline-block;width:12px;height:12px;border-radius:50%;background:{dot};vertical-align:middle;margin-right:8px}}
 table{{border-collapse:collapse;width:100%;margin-top:1rem}} th,td{{text-align:left;padding:.4rem .6rem;border-bottom:1px solid #eee}}
-th{{color:#666;font-weight:600;width:45%}} a{{color:#1e6fd0}} .hint{{color:#999;font-size:.85rem}}</style></head>
+th{{color:#666;font-weight:600;width:45%}} a{{color:#1e6fd0}} .hint{{color:#999;font-size:.85rem}} ul{{columns:2;padding-left:1.1rem}}</style></head>
 <body><h1><span class="dot"></span>ognflights collector, {st['day']}</h1>
 <table>{body}</table>
-<p><a href="/">all-gliders replay &rarr;</a></p>
+<p><a href="/">today's all-gliders replay &rarr;</a></p>
+<h2 style="font-size:1rem">Days with flights</h2>
+<ul>{daylinks}</ul>
 <p class="hint">auto-refreshes every 10s. "Following now" = aircraft launched from the field being tracked live.</p>
 </body></html>"""
 
@@ -145,16 +197,20 @@ def make_handler(status, data_dir, replay_script, models_dir):
                 else:
                     self._send(404, "not found")
             elif path == "/":
-                html = _render_replay(_today(), replay_script)
+                day = _parse_day(urlparse(self.path).query)
+                nav = _nav_html(day)
+                html = _render_replay(day, replay_script)
                 if html is None:
+                    label = "today" if day.date() == _today().date() else day.strftime("%Y-%m-%d")
                     self._send(200, "<!DOCTYPE html><meta charset=utf-8>"
-                               "<body style='font:15px system-ui;margin:3rem auto;max-width:32rem'>"
-                               "<h1>No flights captured yet today.</h1>"
-                               "<p>The collector is running; this page will show today's flights once "
-                               "an aircraft launches from the field. "
-                               "<a href='/stats'>See status &rarr;</a></p>")
+                               "<body style='font:15px system-ui;margin:0;color:#eee;background:#111'>"
+                               + nav +
+                               "<div style='margin:6rem auto;max-width:32rem;text-align:center'>"
+                               f"<h1>No flights stored for {label}.</h1>"
+                               "<p>Pick another day above, or <a style='color:#8cf' href='/stats'>see status &rarr;</a></p>"
+                               "</div></body>")
                 else:
-                    self._send(200, html)
+                    self._send(200, html.replace("</body>", nav + "</body>", 1))
             else:
                 self._send(404, "not found")
 

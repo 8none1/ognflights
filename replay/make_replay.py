@@ -22,7 +22,7 @@ from datetime import datetime, timezone
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from ognflights.config import GRANSDEN
 from ognflights.flights import segment
-from ognflights.store import Store
+from ognflights.store import Store, store_for_day
 
 FT_TO_M = 0.3048
 GLIDERISH = {"glider", "tow", "motorglider"}
@@ -334,11 +334,12 @@ def main():
     p.add_argument("--yaw", help='per-model yaw in degrees, e.g. "glider=0,dr400=90"')
     p.add_argument("--models-url", default="models",
                    help="URL/path (relative to the HTML) where the .glb models are served")
-    p.add_argument("--db", default=os.environ.get("OGNFLIGHTS_DB", "data/ogn.sqlite"))
+    p.add_argument("--db", default=os.environ.get("OGNFLIGHTS_DB"),
+                   help="explicit DB file (default: the year-partitioned file for --day)")
     a = p.parse_args()
 
     day = datetime.strptime(a.day, "%Y-%m-%d").replace(tzinfo=timezone.utc)
-    store = Store(a.db)
+    store = Store(a.db) if a.db else store_for_day(day)
     flights, legend = collect(store, day, a.reg, a.gliders)
     if not flights:
         raise SystemExit("no flights matched")
