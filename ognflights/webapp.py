@@ -1,6 +1,8 @@
 """Tiny stdlib web server for the collector container.
 
   /            -> today's all-gliders 3D replay (generated from the live DB, cached)
+  /live        -> real-time 3D view of currently-airborne aircraft (polls /live.json)
+  /live.json   -> JSON feed of aircraft active in the last ~2 min (recent tracks + latest pos)
   /stats,/status -> health + live capture statistics (auto-refreshing)
   /models/*.glb  -> aircraft models referenced by the replay page
 
@@ -8,6 +10,7 @@ Runs in a thread alongside the `watch` collector, sharing a status dict.
 """
 import glob
 import http.server
+import json
 import os
 import re
 import socketserver
@@ -25,6 +28,71 @@ from .store import Store, year_file
 REPLAY_TTL = 60  # seconds to cache the generated replay page
 _cache: dict[str, tuple[str, float]] = {}
 _cache_lock = threading.Lock()
+
+FT_TO_M = 0.3048
+LIVE_WINDOW = 300     # seconds of recent track to include per aircraft
+LIVE_ACTIVE = 120     # an aircraft is "airborne now" if its last fix is within this
+# Colour palette + model glb files, kept in sync with replay/make_replay.py.
+PALETTE = ["#1e90ff", "#32cd32", "#ff4500", "#ff00ff", "#00ffff", "#ffd700", "#ff1493",
+           "#7cfc00", "#ff8c00", "#9370db", "#00fa9a", "#dc143c", "#40e0d0", "#ffa07a"]
+DR400_MATCH = ("dr-400", "dr400", "dr 400", "robin")
+MODEL_FILES = {"glider": "AS21.glb", "dr400": "DR40.glb"}
+
+
+def _live_model(model_str: str, ac_type: str) -> str:
+    """glider vs dr400 (tug), replicating make_replay.classify_model's simple rule."""
+    s = (model_str or "").lower()
+    if any(m in s for m in DR400_MATCH):
+        return "dr400"
+    if ac_type == "tow":
+        return "dr400"
+    return "glider"
+
+
+def _live_feed(data_dir: str) -> dict:
+    """Aircraft active in the last LIVE_ACTIVE seconds, each with its recent track."""
+    now = int(time.time())
+    day = _today()
+    out = {"now": now, "aircraft": []}
+    yf = year_file(day.year, data_dir)
+    if not os.path.exists(yf):
+        return out
+    s = Store(yf)
+    try:
+        rows = s.db.execute(
+            """SELECT address, ts, lat, lon, alt_ft FROM fixes
+               WHERE ts >= ? ORDER BY address, ts""",
+            (now - LIVE_WINDOW,),
+        ).fetchall()
+        by_addr: dict[str, list] = {}
+        for addr, ts, lat, lon, alt in rows:
+            by_addr.setdefault(addr, []).append((ts, lat, lon, alt))
+        idx = 0
+        for addr, fixes in by_addr.items():
+            if not fixes or (now - fixes[-1][0]) > LIVE_ACTIVE:
+                continue
+            label, model_str = s.device_label(addr)
+            row = s.db.execute(
+                "SELECT aircraft_type FROM devices WHERE address=?", (addr,)
+            ).fetchone()
+            ac_type = row[0] if row else ""
+            mk = _live_model(model_str, ac_type)
+            pts = [[round(lon, 6), round(lat, 6),
+                    round(max(0.0, (alt - GRANSDEN.elevation_ft) * FT_TO_M), 1)]
+                   for (_ts, lat, lon, alt) in fixes]
+            out["aircraft"].append({
+                "address": addr,
+                "name": label,
+                "label": label,
+                "color": PALETTE[idx % len(PALETTE)],
+                "model": mk,
+                "points": pts,
+                "last_ts": fixes[-1][0],
+            })
+            idx += 1
+    finally:
+        s.close()
+    return out
 
 
 _DAY_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
@@ -127,6 +195,124 @@ def _render_replay(day: datetime, replay_script: str, data_dir: str, address: st
     return html
 
 
+# Camera over Gransden, looking north-ish, oblique. lon/lat/height metres.
+LIVE_CES = "https://cesium.com/downloads/cesiumjs/releases/1.143/Build/Cesium"
+LIVE_HTML = r"""<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>Live - Gransden</title>
+<script src="__CES__/Cesium.js"></script>
+<link href="__CES__/Widgets/widgets.css" rel="stylesheet">
+<style>html,body,#c{margin:0;padding:0;width:100%;height:100%;overflow:hidden;background:#000}
+#legend{position:absolute;top:8px;left:8px;z-index:10;background:rgba(0,0,0,.6);color:#fff;
+font:12px sans-serif;padding:8px 10px;border-radius:6px;max-height:90vh;overflow:auto;min-width:150px}
+#legend b{font-size:14px}
+.sw{display:inline-block;width:12px;height:12px;margin-right:6px;border-radius:2px;vertical-align:middle}
+.hint{opacity:.6;font-size:11px}</style>
+</head><body><div id="c"></div><div id="legend"><b>Live - Gransden</b><br><span class="hint">connecting...</span></div>
+<script>
+const MODELS=__MODELS__;      // {glider:"models/AS21.glb", dr400:"models/DR40.glb"}
+Cesium.Ion.defaultAccessToken="";
+const viewer=new Cesium.Viewer("c",{
+  baseLayer:Cesium.ImageryLayer.fromProviderAsync(Cesium.ArcGisMapServerImageryProvider.fromUrl(
+    "https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer")),
+  baseLayerPicker:false,geocoder:false,homeButton:false,navigationHelpButton:false,
+  infoBox:false,selectionIndicator:false,animation:false,timeline:false});
+viewer.scene.globe.enableLighting=true;
+// night-sky style: drop the bright atmosphere + ground haze, black background
+viewer.scene.skyAtmosphere.show=false;
+viewer.scene.globe.showGroundAtmosphere=false;
+viewer.scene.backgroundColor=Cesium.Color.BLACK;
+
+// opening camera over Gransden, oblique looking north
+viewer.camera.setView({
+  destination:Cesium.Cartesian3.fromDegrees(-0.111, 52.10, 9000),
+  orientation:{heading:Cesium.Math.toRadians(0),pitch:Cesium.Math.toRadians(-35),roll:0}
+});
+
+const POLL_MS=6000;
+const GRACE_MS=20000;    // remove an aircraft this long after it drops from the feed
+const ac={};             // address -> {plane, trail, color, name, model, lastSeen}
+
+function upsert(a){
+  const pts=a.points||[];
+  if(!pts.length) return;
+  const last=pts[pts.length-1];
+  const pos=Cesium.Cartesian3.fromDegrees(last[0],last[1],last[2]);
+  const col=Cesium.Color.fromCssColorString(a.color);
+  let e=ac[a.address];
+  if(!e){
+    e=ac[a.address]={color:a.color,name:a.name,model:a.model};
+    e.plane=viewer.entities.add({
+      name:a.name,
+      position:new Cesium.CallbackProperty(()=>e._pos,false),
+      model:{uri:MODELS[a.model]||MODELS.glider, minimumPixelSize:64, maximumScale:20000, scale:1,
+        color:col, colorBlendMode:Cesium.ColorBlendMode.MIX, colorBlendAmount:0.5,
+        silhouetteColor:col, silhouetteSize:1.5}
+    });
+    e.trail=viewer.entities.add({
+      name:a.name+" trail",
+      polyline:{positions:new Cesium.CallbackProperty(()=>e._trail,false),
+        width:2, material:col.withAlpha(0.55)}
+    });
+  }
+  e._pos=pos;
+  e._trail=Cesium.Cartesian3.fromDegreesArrayHeights([].concat(...pts));
+  e.name=a.name; e.plane.name=a.name; e.trail.name=a.name+" trail";
+  e.lastSeen=Date.now();
+}
+
+function prune(){
+  const t=Date.now();
+  for(const addr of Object.keys(ac)){
+    if(t-ac[addr].lastSeen>GRACE_MS){
+      viewer.entities.remove(ac[addr].plane);
+      viewer.entities.remove(ac[addr].trail);
+      delete ac[addr];
+    }
+  }
+}
+
+function renderLegend(){
+  const items=Object.values(ac);
+  const rows=items.map(e=>`<div><span class="sw" style="background:${e.color}"></span>${e.name}</div>`);
+  const n=items.length;
+  const head=`<b>Live - Gransden</b><br><span class="hint">${n} aircraft airborne</span>`;
+  document.getElementById("legend").innerHTML=head+(rows.length?"<br>"+rows.join(""):"");
+}
+
+async function poll(){
+  try{
+    const r=await fetch("live.json",{cache:"no-store"});
+    const d=await r.json();
+    (d.aircraft||[]).forEach(upsert);
+    prune();
+    renderLegend();
+  }catch(e){ /* transient; try again next tick */ }
+  setTimeout(poll, POLL_MS);
+}
+poll();
+
+// hover tooltip: aircraft name under the cursor
+const _tip=document.createElement("div");
+_tip.style.cssText="position:fixed;z-index:30;pointer-events:none;display:none;background:rgba(0,0,0,.8);"
+  +"color:#fff;font:12px sans-serif;padding:2px 7px;border-radius:4px;white-space:nowrap";
+document.body.appendChild(_tip);
+new Cesium.ScreenSpaceEventHandler(viewer.scene.canvas).setInputAction(function(mv){
+  const p=viewer.scene.pick(mv.endPosition);
+  const name=p&&p.id&&p.id.name;
+  if(name){
+    _tip.textContent=name.replace(/ trail$/,"");
+    _tip.style.left=(mv.endPosition.x+14)+"px"; _tip.style.top=(mv.endPosition.y+10)+"px";
+    _tip.style.display="block";
+  } else { _tip.style.display="none"; }
+}, Cesium.ScreenSpaceEventType.MOUSE_MOVE);
+</script></body></html>"""
+
+
+def _live_page() -> str:
+    models = {k: f"models/{v}" for k, v in MODEL_FILES.items()}
+    return LIVE_HTML.replace("__CES__", LIVE_CES).replace("__MODELS__", json.dumps(models))
+
+
 def _stats(status: dict, data_dir: str) -> dict:
     day = _today()
     lo = int(day.replace(hour=0, minute=0, second=0, microsecond=0).timestamp())
@@ -217,6 +403,11 @@ def make_handler(status, data_dir, replay_script, models_dir):
             path = self.path.split("?", 1)[0]
             if path in ("/stats", "/status"):
                 self._send(200, _stats_html(_stats(status, data_dir)))
+            elif path == "/live.json":
+                self._send(200, json.dumps(_live_feed(data_dir)),
+                           "application/json; charset=utf-8")
+            elif path == "/live":
+                self._send(200, _live_page())
             elif path.startswith("/models/"):
                 fn = os.path.basename(path)
                 fp = os.path.join(models_dir, fn)
