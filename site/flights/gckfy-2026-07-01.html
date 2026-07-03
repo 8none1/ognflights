@@ -19,7 +19,8 @@ const viewer=new Cesium.Viewer("c",{
   baseLayer:Cesium.ImageryLayer.fromProviderAsync(Cesium.ArcGisMapServerImageryProvider.fromUrl(
     "https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer")),
   baseLayerPicker:false,geocoder:false,homeButton:false,navigationHelpButton:false,
-  infoBox:false,selectionIndicator:false,animation:true,timeline:true});
+  infoBox:false,selectionIndicator:false,animation:true,timeline:true,
+  requestRenderMode:true});  // only redraw when something changes (idle/paused = ~0 CPU)
 viewer.scene.globe.enableLighting=true;
 // transparent place-names / boundaries overlay (toggled off by default).
 // NB: imageryLayers.add() returns void, so keep the layer ref from fromProviderAsync.
@@ -29,7 +30,9 @@ const labelLayer=Cesium.ImageryLayer.fromProviderAsync(
 viewer.imageryLayers.add(labelLayer);
 labelLayer.show=false;
 let tmin=null,tmax=null;
-const trails=[], planes=[], speedTrails=[];
+const trails=[], planes=[];
+const speedInstances={};   // aircraft index -> [GeometryInstance]; batched into one primitive per aircraft
+const speedPrims={};       // aircraft index -> Cesium.Primitive
 const SPD_LO=30, SPD_HI=110;   // knots mapped across the speed colour ramp
 function speedColor(kt){
   const t=Math.max(0,Math.min(1,(kt-SPD_LO)/(SPD_HI-SPD_LO)));
@@ -68,12 +71,17 @@ DATA.flights.forEach(fl=>{
   trails.push(viewer.entities.add({name:fl.name+" trail",
     polyline:{positions:Cesium.Cartesian3.fromDegreesArrayHeights(flat),
     width:1, material:col.withAlpha(0.35)}}));
-  speedTrails.push(viewer.scene.primitives.add(new Cesium.Primitive({
-    geometryInstances:new Cesium.GeometryInstance({geometry:new Cesium.PolylineGeometry({
+  (speedInstances[fl.ai]=speedInstances[fl.ai]||[]).push(new Cesium.GeometryInstance({geometry:new Cesium.PolylineGeometry({
       positions:Cesium.Cartesian3.fromDegreesArrayHeights(flat), width:3,
       vertexFormat:Cesium.PolylineColorAppearance.VERTEX_FORMAT,
-      colors:(fl.spd||[]).map(speedColor), colorsPerVertex:true, arcType:Cesium.ArcType.NONE})}),
-    appearance:new Cesium.PolylineColorAppearance({translucent:true}), show:false})));
+      colors:(fl.spd||[]).map(speedColor), colorsPerVertex:true, arcType:Cesium.ArcType.NONE})}));
+});
+// one batched speed-trail primitive per aircraft: draw calls drop from ~1/flight to ~1/aircraft,
+// while still allowing per-aircraft show/hide.
+Object.keys(speedInstances).forEach(ai=>{
+  speedPrims[ai]=viewer.scene.primitives.add(new Cesium.Primitive({
+    geometryInstances:speedInstances[ai],
+    appearance:new Cesium.PolylineColorAppearance({translucent:true}), show:false}));
 });
 const leg=[`<b>${DATA.title}</b><br><span class="hint">${DATA.flights.length} flights, ${DATA.legend.length} aircraft</span><br>`,
   `<div style="margin:4px 0;user-select:none">trails:
@@ -103,7 +111,7 @@ function applyTrails(){
   const speed=document.getElementById("speedcol").checked;
   planes.forEach((p,i)=>{const on=aircraftOn[flightAi[i]]; p.show=on; p.path.show=on && m!=="off";});
   trails.forEach((t,i)=>{t.show=aircraftOn[flightAi[i]] && m==="full" && !speed;});
-  speedTrails.forEach((p,i)=>{p.show=aircraftOn[flightAi[i]] && m==="full" && speed;});
+  Object.keys(speedPrims).forEach(ai=>{speedPrims[ai].show=aircraftOn[+ai] && m==="full" && speed;});
   document.getElementById("speedscale").style.display=(m==="full"&&speed)?"block":"none";
 }
 document.querySelectorAll('input.acft').forEach(cb=>cb.addEventListener("change",e=>{
