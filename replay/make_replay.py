@@ -275,7 +275,37 @@ def ground_speeds_kt(fixes):
     return out
 
 
-def collect(store, day, reg_spec, gliders):
+def _rdp_keep(pts, eps):
+    """Ramer-Douglas-Peucker: indices to keep so the polyline stays within `eps` metres
+    of the original. Drops redundant points on straight runs, preserves turns. Iterative."""
+    n = len(pts)
+    if n < 3 or eps <= 0:
+        return list(range(n))
+    keep = [False] * n
+    keep[0] = keep[-1] = True
+    stack = [(0, n - 1)]
+    while stack:
+        s, e = stack.pop()
+        x1, y1, z1 = pts[s]; x2, y2, z2 = pts[e]
+        dx, dy, dz = x2 - x1, y2 - y1, z2 - z1
+        seg2 = dx * dx + dy * dy + dz * dz
+        dmax, idx = 0.0, -1
+        for i in range(s + 1, e):
+            x, y, z = pts[i]
+            if seg2 == 0:
+                d = math.dist(pts[i], pts[s])
+            else:
+                t = max(0.0, min(1.0, ((x - x1) * dx + (y - y1) * dy + (z - z1) * dz) / seg2))
+                d = math.dist((x, y, z), (x1 + t * dx, y1 + t * dy, z1 + t * dz))
+            if d > dmax:
+                dmax, idx = d, i
+        if idx != -1 and dmax > eps:
+            keep[idx] = True
+            stack.append((s, idx)); stack.append((idx, e))
+    return [i for i in range(n) if keep[i]]
+
+
+def collect(store, day, reg_spec, gliders, simplify=0.0):
     lo, hi = store.day_bounds(day)
     flights, legend, ai = [], [], 0
     want_reg, want_idx = None, None
@@ -310,6 +340,12 @@ def collect(store, day, reg_spec, gliders):
                         round(max(0.0, (f.alt_ft - GRANSDEN.elevation_ft) * FT_TO_M), 1)]
                        for f in fl.fixes]
             spd = [round(v) for v in ground_speeds_kt(fl.fixes)]
+            if simplify and len(samples) > 2:
+                clat = math.cos(math.radians(GRANSDEN.lat))
+                pts = [(s[1] * 111320.0 * clat, s[2] * 111320.0, s[3]) for s in samples]
+                keep = _rdp_keep(pts, simplify)
+                samples = [samples[i] for i in keep]
+                spd = [spd[i] for i in keep]
             flights.append({"name": f"{label} F{i} {t0}Z", "color": col, "mk": mk,
                             "ai": aidx, "samples": samples, "spd": spd})
             used += 1
@@ -326,6 +362,9 @@ def main():
     p.add_argument("--reg", help='e.g. "G-CKFY" or "G-CKFY:1,2,3,6"')
     p.add_argument("--gliders", action="store_true", help="all glider/tug types")
     p.add_argument("--mult", type=int, default=60, help="playback speed multiplier")
+    p.add_argument("--simplify", type=float, default=0.0,
+                   help="RDP trail simplification tolerance in metres (0 = full fidelity); "
+                        "drops redundant straight-line points, keeps turns. Used for the busy dashboard view.")
     p.add_argument("--trail", choices=["active", "full", "off"], default="active",
                    help="initial trail mode")
     p.add_argument("--speed-colour", action="store_true",
@@ -340,7 +379,7 @@ def main():
 
     day = datetime.strptime(a.day, "%Y-%m-%d").replace(tzinfo=timezone.utc)
     store = Store(a.db) if a.db else store_for_day(day)
-    flights, legend = collect(store, day, a.reg, a.gliders)
+    flights, legend = collect(store, day, a.reg, a.gliders, simplify=a.simplify)
     if not flights:
         raise SystemExit("no flights matched")
 

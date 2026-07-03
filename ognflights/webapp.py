@@ -74,18 +74,36 @@ def _nav_html(day: datetime) -> str:
         ' <a href="/stats" style="color:#8cf;margin-left:8px">stats</a></div>')
 
 
-def _render_replay(day: datetime, replay_script: str) -> str | None:
+def _aircraft_count(day: datetime, data_dir: str) -> int:
+    lo = int(day.replace(hour=0, minute=0, second=0, microsecond=0).timestamp())
+    yf = year_file(day.year, data_dir)
+    if not os.path.exists(yf):
+        return 0
+    s = Store(yf)
+    try:
+        return s.db.execute("SELECT COUNT(DISTINCT address) FROM fixes WHERE ts>=? AND ts<?",
+                            (lo, lo + 86400)).fetchone()[0]
+    finally:
+        s.close()
+
+
+def _render_replay(day: datetime, replay_script: str, data_dir: str) -> str | None:
     key = day.strftime("%Y-%m-%d")
     with _cache_lock:
         hit = _cache.get(key)
         if hit and time.time() - hit[1] < REPLAY_TTL:
             return hit[0]
+    # Simplify trails harder when more gliders are on screen (keeps it responsive).
+    # A handful of aircraft render full-fidelity; a busy day is thinned (turns preserved).
+    n_ac = _aircraft_count(day, data_dir)
+    simplify = max(0, min(60, (n_ac - 4) * 4))
     tmp = tempfile.mktemp(suffix=".html")
+    cmd = ["python3", replay_script, "--out", tmp, "--day", key,
+           "--title", f"All gliders {key}", "--gliders", "--mult", "60"]
+    if simplify:
+        cmd += ["--simplify", str(simplify)]
     try:
-        subprocess.run(
-            ["python3", replay_script, "--out", tmp, "--day", key,
-             "--title", f"All gliders {key}", "--gliders", "--mult", "60"],
-            check=True, capture_output=True, timeout=120)
+        subprocess.run(cmd, check=True, capture_output=True, timeout=120)
     except subprocess.CalledProcessError:
         return None            # no flights yet today
     except Exception:
@@ -199,7 +217,7 @@ def make_handler(status, data_dir, replay_script, models_dir):
             elif path == "/":
                 day = _parse_day(urlparse(self.path).query)
                 nav = _nav_html(day)
-                html = _render_replay(day, replay_script)
+                html = _render_replay(day, replay_script, data_dir)
                 if html is None:
                     label = "today" if day.date() == _today().date() else day.strftime("%Y-%m-%d")
                     self._send(200, "<!DOCTYPE html><meta charset=utf-8>"
