@@ -1,6 +1,7 @@
 """Tiny stdlib web server for the collector container.
 
-  /            -> today's all-gliders 3D replay (?day=, ?address= for single aircraft)
+  /            -> landing page linking to Live / Daily replay / Stats
+  /replay      -> all-gliders 3D replay for a day (?day=, ?address= for single aircraft)
   /live        -> real-time 3D view of currently-airborne aircraft (SSE-driven)
   /live.json   -> JSON feed of aircraft active in the last ~2 min (initial snapshot)
   /live.stream -> Server-Sent Events: one fix per followed aircraft as it arrives
@@ -179,15 +180,16 @@ def _nav_html(day: datetime, address: str | None = None) -> str:
     prev = (day - timedelta(days=1)).strftime("%Y-%m-%d")
     nxt = (day + timedelta(days=1)).strftime("%Y-%m-%d")
     q = f"&address={address}" if address else ""
-    extra = (f'<a href="/?day={d}" style="color:#8cf;margin-left:8px">all gliders</a>'
-             if address else '<a href="/stats" style="color:#8cf;margin-left:8px">stats</a>')
+    extra = (f'<a href="/replay?day={d}" style="color:#8cf;margin-left:8px">all gliders</a>'
+             if address else '<a href="/" style="color:#8cf;margin-left:8px">home</a>'
+                             ' <a href="/stats" style="color:#8cf;margin-left:8px">stats</a>')
     return (
         '<div style="position:fixed;top:8px;left:50%;transform:translateX(-50%);z-index:20;'
         'background:rgba(0,0,0,.6);color:#fff;padding:5px 9px;border-radius:6px;font:13px sans-serif">'
-        f'<a href="/?day={prev}{q}" style="color:#8cf;text-decoration:none">&#9664;</a> '
-        f'<input type="date" value="{d}" onchange="location=\'/?day=\'+this.value+\'{q}\'" '
+        f'<a href="/replay?day={prev}{q}" style="color:#8cf;text-decoration:none">&#9664;</a> '
+        f'<input type="date" value="{d}" onchange="location=\'/replay?day=\'+this.value+\'{q}\'" '
         'style="font:13px sans-serif;background:#222;color:#fff;border:1px solid #555;border-radius:3px"> '
-        f'<a href="/?day={nxt}{q}" style="color:#8cf;text-decoration:none">&#9654;</a>'
+        f'<a href="/replay?day={nxt}{q}" style="color:#8cf;text-decoration:none">&#9654;</a>'
         f' {extra}</div>')
 
 
@@ -389,6 +391,82 @@ def _live_page() -> str:
     return LIVE_HTML.replace("__CES__", LIVE_CES).replace("__MODELS__", json.dumps(models))
 
 
+def _home_page(status: dict, data_dir: str) -> str:
+    """Landing page: a status strip + a grid of feature cards. Robust when empty."""
+    # cheap, best-effort status line: airborne now + today's flight count.
+    airborne = 0
+    try:
+        airborne = len(_live_feed(data_dir).get("aircraft", []))
+    except Exception:
+        pass
+    flights_today = 0
+    try:
+        day = _today()
+        lo = int(day.replace(hour=0, minute=0, second=0, microsecond=0).timestamp())
+        hi = lo + 86400
+        yf = year_file(day.year, data_dir)
+        if os.path.exists(yf):
+            s = Store(yf)
+            try:
+                addrs = [r[0] for r in s.db.execute(
+                    "SELECT DISTINCT address FROM fixes WHERE ts>=? AND ts<?", (lo, hi)).fetchall()]
+                flights_today = sum(
+                    len(segment(a, s.fixes_for(a, lo, hi), GRANSDEN)) for a in addrs)
+            finally:
+                s.close()
+    except Exception:
+        pass
+
+    cards = [
+        {"href": "/live", "title": "Live",
+         "desc": "Real-time 3D view of aircraft airborne right now."},
+        {"href": "/replay", "title": "Daily replay",
+         "desc": "3D replay of a day's flights. Pick any day with the date picker."},
+        {"href": "/stats", "title": "Stats",
+         "desc": "Collector health and today's capture statistics."},
+    ]
+    card_html = "".join(
+        f'<a class="card" href="{c["href"]}"><h2>{c["title"]}</h2>'
+        f'<p>{c["desc"]}</p></a>'
+        for c in cards)
+
+    noun = "aircraft airborne now"
+    status_html = (
+        f'<div class="strip"><a href="/live"><b>{airborne}</b> {noun}</a>'
+        f'<span class="sep">|</span>'
+        f'<a href="/replay"><b>{flights_today}</b> flights today</a></div>')
+
+    return f"""<!DOCTYPE html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ognflights - Gransden</title>
+<style>
+:root{{color-scheme:dark}}
+body{{font:16px/1.5 system-ui,sans-serif;margin:0;background:#0d1117;color:#e6edf3;
+min-height:100vh;display:flex;flex-direction:column;align-items:center}}
+.wrap{{max-width:760px;width:100%;padding:2.5rem 1.25rem 3rem;box-sizing:border-box}}
+h1{{font-size:1.7rem;margin:.2rem 0 .1rem}}
+.sub{{color:#8b949e;margin:0 0 1.4rem}}
+.strip{{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:.7rem 1rem;
+margin-bottom:1.6rem;font-size:.95rem}}
+.strip a{{color:#e6edf3;text-decoration:none}} .strip b{{color:#58a6ff}}
+.strip .sep{{color:#30363d;margin:0 .8rem}}
+.grid{{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:1rem}}
+.card{{display:block;background:#161b22;border:1px solid #30363d;border-radius:10px;
+padding:1.1rem 1.2rem;text-decoration:none;color:inherit;transition:border-color .15s,background .15s}}
+.card:hover{{border-color:#58a6ff;background:#1b222b}}
+.card h2{{font-size:1.15rem;margin:0 0 .35rem;color:#58a6ff}}
+.card p{{margin:0;color:#8b949e;font-size:.92rem}}
+.foot{{color:#484f58;font-size:.8rem;margin-top:2rem}}
+</style></head>
+<body><div class="wrap">
+<h1>ognflights</h1>
+<p class="sub">Glider tracking for Gransden Lodge (Cambridge Gliding Centre).</p>
+{status_html}
+<div class="grid">{card_html}</div>
+<p class="foot">Data from the Open Glider Network. Times are UTC.</p>
+</div></body></html>"""
+
+
 def _stats(status: dict, data_dir: str) -> dict:
     day = _today()
     lo = int(day.replace(hour=0, minute=0, second=0, microsecond=0).timestamp())
@@ -444,7 +522,7 @@ def _stats_html(st: dict) -> str:
     ]
     body = "".join(f"<tr><th>{k}</th><td>{v}</td></tr>" for k, v in rows)
     days = st.get("days", [])
-    daylinks = ("".join(f'<li><a href="/?day={d}">{d}</a></li>' for d in days)
+    daylinks = ("".join(f'<li><a href="/replay?day={d}">{d}</a></li>' for d in days)
                 if days else "<li class='hint'>none captured yet</li>")
     return f"""<!DOCTYPE html><html><head><meta charset="utf-8">
 <meta http-equiv="refresh" content="10"><title>ognflights status</title>
@@ -454,7 +532,7 @@ table{{border-collapse:collapse;width:100%;margin-top:1rem}} th,td{{text-align:l
 th{{color:#666;font-weight:600;width:45%}} a{{color:#1e6fd0}} .hint{{color:#999;font-size:.85rem}} ul{{columns:2;padding-left:1.1rem}}</style></head>
 <body><h1><span class="dot"></span>ognflights collector, {st['day']}</h1>
 <table>{body}</table>
-<p><a href="/">today's all-gliders replay &rarr;</a></p>
+<p><a href="/">home</a> &middot; <a href="/replay">today's all-gliders replay &rarr;</a></p>
 <h2 style="font-size:1rem">Days with flights</h2>
 <ul>{daylinks}</ul>
 <p class="hint">auto-refreshes every 10s. "Following now" = aircraft launched from the field being tracked live.</p>
@@ -474,6 +552,34 @@ def make_handler(status, data_dir, replay_script, models_dir, hub):
             self.end_headers()
             if self.command != "HEAD":
                 self.wfile.write(data)
+
+        def _redirect(self, location):
+            self.send_response(302)
+            self.send_header("Location", location)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+        def _replay(self):
+            q = urlparse(self.path).query
+            day = _parse_day(q)
+            addr = parse_qs(q).get("address", [None])[0]
+            if addr and not re.match(r"^[A-Za-z0-9._-]+$", addr):
+                addr = None
+            nav = _nav_html(day, addr)
+            html = _render_replay(day, replay_script, data_dir, addr)
+            if html is None:
+                label = "today" if day.date() == _today().date() else day.strftime("%Y-%m-%d")
+                what = f"{addr} on {label}" if addr else label
+                self._send(200, "<!DOCTYPE html><meta charset=utf-8>"
+                           "<body style='font:15px system-ui;margin:0;color:#eee;background:#111'>"
+                           + nav +
+                           "<div style='margin:6rem auto;max-width:32rem;text-align:center'>"
+                           f"<h1>No flights stored for {what}.</h1>"
+                           "<p>Pick another day above, or <a style='color:#8cf' href='/stats'>see status &rarr;</a>, "
+                           "or <a style='color:#8cf' href='/'>home &rarr;</a></p>"
+                           "</div></body>")
+            else:
+                self._send(200, html.replace("</body>", nav + "</body>", 1))
 
         def _stream(self):
             """Server-Sent Events: live fixes for followed aircraft, plus heartbeats."""
@@ -518,6 +624,8 @@ def make_handler(status, data_dir, replay_script, models_dir, hub):
                 self._stream()
             elif path == "/live":
                 self._send(200, _live_page())
+            elif path == "/replay":
+                self._replay()
             elif path.startswith("/models/"):
                 fn = os.path.basename(path)
                 fp = os.path.join(models_dir, fn)
@@ -528,24 +636,12 @@ def make_handler(status, data_dir, replay_script, models_dir, hub):
                     self._send(404, "not found")
             elif path == "/":
                 q = urlparse(self.path).query
-                day = _parse_day(q)
-                addr = parse_qs(q).get("address", [None])[0]
-                if addr and not re.match(r"^[A-Za-z0-9._-]+$", addr):
-                    addr = None
-                nav = _nav_html(day, addr)
-                html = _render_replay(day, replay_script, data_dir, addr)
-                if html is None:
-                    label = "today" if day.date() == _today().date() else day.strftime("%Y-%m-%d")
-                    what = f"{addr} on {label}" if addr else label
-                    self._send(200, "<!DOCTYPE html><meta charset=utf-8>"
-                               "<body style='font:15px system-ui;margin:0;color:#eee;background:#111'>"
-                               + nav +
-                               "<div style='margin:6rem auto;max-width:32rem;text-align:center'>"
-                               f"<h1>No flights stored for {what}.</h1>"
-                               "<p>Pick another day above, or <a style='color:#8cf' href='/stats'>see status &rarr;</a></p>"
-                               "</div></body>")
+                params = parse_qs(q)
+                # backward-compat: old replay-on-root links keep working via redirect.
+                if "day" in params or "address" in params:
+                    self._redirect("/replay" + ("?" + q if q else ""))
                 else:
-                    self._send(200, html.replace("</body>", nav + "</body>", 1))
+                    self._send(200, _home_page(status, data_dir))
             else:
                 self._send(404, "not found")
 
