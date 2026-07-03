@@ -69,7 +69,6 @@ const HOME=__HOME__;
 const MYAW=__MYAW__;          // {modelKey: radians} yaw offset per model; tune with number keys + [ ]
 const TRAILMODE="__TRAILMODE__";
 const SPEEDCOL=__SPEEDCOL__;
-const VIEWLINK=__VIEWLINK__;
 Cesium.Ion.defaultAccessToken="";
 const viewer=new Cesium.Viewer("c",{
   baseLayer:Cesium.ImageryLayer.fromProviderAsync(Cesium.ArcGisMapServerImageryProvider.fromUrl(
@@ -84,15 +83,6 @@ const labelLayer=Cesium.ImageryLayer.fromProviderAsync(
     "https://services.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer"));
 viewer.imageryLayers.add(labelLayer);
 labelLayer.show=false;
-
-// Optional Google Photorealistic 3D Tiles (real terrain + buildings). Key is injected at
-// build/publish time; if absent (empty or the "__..." placeholder) we stay on flat imagery.
-const GOOGLE_KEY="__GOOGLE_KEY__";
-if(GOOGLE_KEY && !GOOGLE_KEY.startsWith("__")){
-  Cesium.createGooglePhotorealistic3DTileset({key:GOOGLE_KEY})
-    .then(t=>{viewer.scene.primitives.add(t); viewer.scene.globe.show=false;})
-    .catch(e=>console.error("Google 3D Tiles failed to load:",e));
-}
 let tmin=null,tmax=null;
 const trails=[], planes=[], speedTrails=[];
 const SPD_LO=30, SPD_HI=110;   // knots mapped across the speed colour ramp
@@ -153,7 +143,6 @@ const leg=[`<b>${DATA.title}</b><br><span class="hint">${DATA.flights.length} fl
     <label style="cursor:pointer;margin-left:8px"><input type="checkbox" id="placenames"> place names</label>
     <br><button id="resetview" style="cursor:pointer;margin-top:4px">reset view</button></div>`];
 DATA.legend.forEach(a=>leg.push(`<span class="sw" style="background:${a.color}"></span>${a.label} (${a.n})<br>`));
-if(VIEWLINK && VIEWLINK.url) leg.push(`<div style="margin-top:6px"><a style="color:#8cf" href="${VIEWLINK.url}">${VIEWLINK.label} &rarr;</a></div>`);
 leg.push(`<div id="models" class="hint" style="margin-top:6px"></div>`);
 leg.push(`<div class="hint" style="margin-top:6px">3D models: <a style="color:#8cf" href="https://github.com/Ysurac/FlightAirMap-3dmodels">FlightAirMap</a> (GPLv2)</div>`);
 document.getElementById("legend").innerHTML=leg.join("");
@@ -264,7 +253,7 @@ def ground_speeds_kt(fixes):
     return out
 
 
-def collect(store, day, reg_spec, gliders, photoreal=False, geoid_m=48.0):
+def collect(store, day, reg_spec, gliders):
     lo, hi = store.day_bounds(day)
     flights, legend, ai = [], [], 0
     want_reg, want_idx = None, None
@@ -290,17 +279,12 @@ def collect(store, day, reg_spec, gliders, photoreal=False, geoid_m=48.0):
             if want_idx and i not in want_idx:
                 continue
             t0 = datetime.fromtimestamp(fl.start, tz=timezone.utc).strftime("%H:%M")
-            # Altitude datum depends on the base:
-            #  - flat imagery (no terrain): Cesium draws ground at the sea-level ellipsoid, so plot
-            #    height ABOVE THE AIRFIELD (subtract field elevation) to seat aircraft on the map.
-            #  - Google 3D Tiles (real terrain at true ellipsoidal heights): plot MSL + geoid height,
-            #    i.e. ellipsoidal height, so aircraft sit on the real ground.
-            if photoreal:
-                height = lambda ft: round(ft * FT_TO_M + geoid_m, 1)
-            else:
-                height = lambda ft: round(max(0.0, (ft - GRANSDEN.elevation_ft) * FT_TO_M), 1)
+            # Height ABOVE THE AIRFIELD, not MSL: the replay has no terrain, so Cesium draws
+            # the ground at the sea-level ellipsoid. Plotting MSL would float every aircraft
+            # ~field-elevation too high. Subtract field elevation so ground level sits on the map.
             samples = [[datetime.fromtimestamp(f.ts, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-                        round(f.lon, 6), round(f.lat, 6), height(f.alt_ft)]
+                        round(f.lon, 6), round(f.lat, 6),
+                        round(max(0.0, (f.alt_ft - GRANSDEN.elevation_ft) * FT_TO_M), 1)]
                        for f in fl.fixes]
             spd = [round(v) for v in ground_speeds_kt(fl.fixes)]
             flights.append({"name": f"{label} F{i} {t0}Z", "color": col, "mk": mk,
@@ -323,15 +307,6 @@ def main():
                    help="initial trail mode")
     p.add_argument("--speed-colour", action="store_true",
                    help="start with the full trail coloured by ground speed")
-    p.add_argument("--google-3d", action="store_true",
-                   help="use Google Photorealistic 3D Tiles (real terrain/buildings) instead of flat imagery")
-    p.add_argument("--google-key", default="",
-                   help="Google Maps API key (else GOOGLE_MAPS_KEY env). Omit with --google-3d to leave "
-                        "a __GOOGLE_KEY__ placeholder for the publish step to inject.")
-    p.add_argument("--geoid", type=float, default=48.0,
-                   help="geoid height (m) added to MSL altitude in --google-3d mode so aircraft sit on real terrain")
-    p.add_argument("--link-label", default="", help="text for an in-overlay link to another view (e.g. 'View in 3D')")
-    p.add_argument("--link-url", default="", help="href for the overlay link (relative to the page)")
     p.add_argument("--home", help='lon,lat,height,heading,pitch (degrees/metres)')
     p.add_argument("--yaw", help='per-model yaw in degrees, e.g. "glider=0,dr400=90"')
     p.add_argument("--models-url", default="models",
@@ -341,14 +316,9 @@ def main():
 
     day = datetime.strptime(a.day, "%Y-%m-%d").replace(tzinfo=timezone.utc)
     store = Store(a.db)
-    flights, legend = collect(store, day, a.reg, a.gliders, photoreal=a.google_3d, geoid_m=a.geoid)
+    flights, legend = collect(store, day, a.reg, a.gliders)
     if not flights:
         raise SystemExit("no flights matched")
-
-    if a.google_3d:
-        google_key = a.google_key or os.environ.get("GOOGLE_MAPS_KEY", "") or "__GOOGLE_KEY__"
-    else:
-        google_key = ""
 
     home = dict(DEFAULT_HOME)
     if a.home:
@@ -383,8 +353,6 @@ def main():
             .replace("__MYAW__", json.dumps(myaw))
             .replace("__TRAILMODE__", a.trail)
             .replace("__SPEEDCOL__", "true" if a.speed_colour else "false")
-            .replace("__GOOGLE_KEY__", google_key)
-            .replace("__VIEWLINK__", json.dumps({"label": a.link_label, "url": a.link_url} if a.link_url else None))
             .replace("__MULT__", str(a.mult)))
     with open(a.out, "w") as f:
         f.write(html)

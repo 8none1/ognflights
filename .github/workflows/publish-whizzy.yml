@@ -33,8 +33,6 @@ jobs:
           ssh-keyscan -t ed25519,rsa github.com >> ~/.ssh/known_hosts 2>/dev/null
 
       - name: Publish to website repo
-        env:
-          GOOGLE_MAPS_KEY: ${{ secrets.GOOGLE_MAPS_KEY }}
         run: |
           set -euo pipefail
           export GIT_SSH_COMMAND="ssh -i $HOME/.ssh/deploy_key -o IdentitiesOnly=yes"
@@ -48,15 +46,6 @@ jobs:
           cp site/flights/*.html          website/flights/
           cp replay/models/*.glb          website/flights/models/
           cp replay/models/NOTICE.md      website/flights/models/ 2>/dev/null || true
-
-          # inject the Google Maps key into the published pages (kept out of the source repo).
-          # Referrer-restricted key, so it's fine in the public website; falls back to flat if unset.
-          if [ -n "${GOOGLE_MAPS_KEY:-}" ]; then
-            find website/flights -name '*.html' -exec sed -i "s|__GOOGLE_KEY__|${GOOGLE_MAPS_KEY}|g" {} +
-            echo "Injected Google Maps key into published pages."
-          else
-            echo "No GOOGLE_MAPS_KEY secret set; 3D pages will fall back to flat imagery."
-          fi
 
           cd website
           git config user.name  "ognflights publish"
