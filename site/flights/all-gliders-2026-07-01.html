@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html><head><meta charset="utf-8"><title>All gliders 2026-07-01 replay</title>
-<script src="https://cesium.com/downloads/cesiumjs/releases/1.95/Build/Cesium/Cesium.js"></script>
-<link href="https://cesium.com/downloads/cesiumjs/releases/1.95/Build/Cesium/Widgets/widgets.css" rel="stylesheet">
+<script src="https://cesium.com/downloads/cesiumjs/releases/1.143/Build/Cesium/Cesium.js"></script>
+<link href="https://cesium.com/downloads/cesiumjs/releases/1.143/Build/Cesium/Widgets/widgets.css" rel="stylesheet">
 <style>html,body,#c{margin:0;padding:0;width:100%;height:100%;overflow:hidden}
 #legend{position:absolute;top:8px;left:8px;z-index:10;background:rgba(0,0,0,.6);color:#fff;
 font:12px sans-serif;padding:8px 10px;border-radius:6px;max-height:90vh;overflow:auto}
@@ -16,13 +16,17 @@ const TRAILMODE="active";
 const SPEEDCOL=false;
 Cesium.Ion.defaultAccessToken="";
 const viewer=new Cesium.Viewer("c",{
-  imageryProvider:new Cesium.ArcGisMapServerImageryProvider({url:"https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer"}),
+  baseLayer:Cesium.ImageryLayer.fromProviderAsync(Cesium.ArcGisMapServerImageryProvider.fromUrl(
+    "https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer")),
   baseLayerPicker:false,geocoder:false,homeButton:false,navigationHelpButton:false,
   infoBox:false,selectionIndicator:false,animation:true,timeline:true});
 viewer.scene.globe.enableLighting=true;
-// transparent place-names / boundaries overlay (toggled off by default)
-const labelLayer=viewer.imageryLayers.addImageryProvider(new Cesium.ArcGisMapServerImageryProvider(
-  {url:"https://services.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer"}));
+// transparent place-names / boundaries overlay (toggled off by default).
+// NB: imageryLayers.add() returns void, so keep the layer ref from fromProviderAsync.
+const labelLayer=Cesium.ImageryLayer.fromProviderAsync(
+  Cesium.ArcGisMapServerImageryProvider.fromUrl(
+    "https://services.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer"));
+viewer.imageryLayers.add(labelLayer);
 labelLayer.show=false;
 let tmin=null,tmax=null;
 const trails=[], planes=[], speedTrails=[];

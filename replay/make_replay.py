@@ -26,7 +26,7 @@ from ognflights.store import Store
 
 FT_TO_M = 0.3048
 GLIDERISH = {"glider", "tow", "motorglider"}
-CES = "https://cesium.com/downloads/cesiumjs/releases/1.95/Build/Cesium"
+CES = "https://cesium.com/downloads/cesiumjs/releases/1.143/Build/Cesium"
 PALETTE = ["#1e90ff", "#32cd32", "#ff4500", "#ff00ff", "#00ffff", "#ffd700", "#ff1493",
            "#7cfc00", "#ff8c00", "#9370db", "#00fa9a", "#dc143c", "#40e0d0", "#ffa07a"]
 
@@ -71,13 +71,17 @@ const TRAILMODE="__TRAILMODE__";
 const SPEEDCOL=__SPEEDCOL__;
 Cesium.Ion.defaultAccessToken="";
 const viewer=new Cesium.Viewer("c",{
-  imageryProvider:new Cesium.ArcGisMapServerImageryProvider({url:"https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer"}),
+  baseLayer:Cesium.ImageryLayer.fromProviderAsync(Cesium.ArcGisMapServerImageryProvider.fromUrl(
+    "https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer")),
   baseLayerPicker:false,geocoder:false,homeButton:false,navigationHelpButton:false,
   infoBox:false,selectionIndicator:false,animation:true,timeline:true});
 viewer.scene.globe.enableLighting=true;
-// transparent place-names / boundaries overlay (toggled off by default)
-const labelLayer=viewer.imageryLayers.addImageryProvider(new Cesium.ArcGisMapServerImageryProvider(
-  {url:"https://services.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer"}));
+// transparent place-names / boundaries overlay (toggled off by default).
+// NB: imageryLayers.add() returns void, so keep the layer ref from fromProviderAsync.
+const labelLayer=Cesium.ImageryLayer.fromProviderAsync(
+  Cesium.ArcGisMapServerImageryProvider.fromUrl(
+    "https://services.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer"));
+viewer.imageryLayers.add(labelLayer);
 labelLayer.show=false;
 let tmin=null,tmax=null;
 const trails=[], planes=[], speedTrails=[];
