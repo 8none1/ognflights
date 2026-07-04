@@ -279,7 +279,9 @@ viewer.camera.setView({
 
 const GRACE_MS=60000;    // remove an aircraft this long after its last event
 const MAX_TRAIL=600;     // bounded recent-points trail per aircraft
-const ac={};             // address -> {plane, trail, color, name, model, pts[], lastSeen}
+const ORIENT_MIN_M=30;   // walk back through the trail until at least this far behind
+const ORIENT_STATIONARY_M=10; // below this displacement, keep the last-good heading (no spin)
+const ac={};             // address -> {plane, trail, color, name, model, pts[], lastSeen, _ori}
 let trailsOn=true;       // toggled by the "Trail" checkbox in the legend
 
 // create-or-update an aircraft entity from a position (lon,lat,height_m)
@@ -294,6 +296,9 @@ function ensure(addr,name,color,model){
   e.plane=viewer.entities.add({
     name:name,
     position:new Cesium.CallbackProperty(()=>e._pos,false),
+    // nose-forward: driven by the smoothed lookback vector (see updateOrientation);
+    // undefined until the aircraft has moved enough, then holds the last-good heading.
+    orientation:new Cesium.CallbackProperty(()=>e._ori,false),
     model:{uri:MODELS[model]||MODELS.glider, minimumPixelSize:64, maximumScale:20000, scale:1,
       color:col, colorBlendMode:Cesium.ColorBlendMode.MIX, colorBlendAmount:0.5,
       silhouetteColor:col, silhouetteSize:1.5}
@@ -312,13 +317,41 @@ function applyTrails(){
   if(viewer.scene.requestRenderMode) viewer.scene.requestRender();
 }
 
+// point the model along a SMOOTHED velocity vector: from a lookback point a little
+// way back in the retained trail to the current position. Deliberately not the
+// immediately-previous fix, to damp GPS jitter. This is the same maths the replay's
+// VelocityOrientationProperty uses (both models have zero yaw offset, so no extra
+// correction is needed). Below ORIENT_STATIONARY_M we keep the last-good heading so
+// parked/slow gliders do not spin randomly.
+function updateOrientation(e){
+  const n=e.pts.length;
+  if(n<2) return;
+  const last=e.pts[n-1];
+  const cur=Cesium.Cartesian3.fromDegrees(last[0],last[1],last[2]);
+  // walk back until at least ORIENT_MIN_M behind, else use the oldest point we have
+  let lookback=null;
+  for(let i=n-2;i>=0;i--){
+    const p=e.pts[i];
+    const c=Cesium.Cartesian3.fromDegrees(p[0],p[1],p[2]);
+    lookback=c;
+    if(Cesium.Cartesian3.distance(cur,c)>=ORIENT_MIN_M) break;
+  }
+  if(!lookback) return;
+  const vel=Cesium.Cartesian3.subtract(cur,lookback,new Cesium.Cartesian3());
+  if(Cesium.Cartesian3.magnitude(vel)<ORIENT_STATIONARY_M) return; // keep last-good
+  const m=Cesium.Transforms.rotationMatrixFromPositionVelocity(cur,vel,Cesium.Ellipsoid.WGS84);
+  e._ori=Cesium.Quaternion.fromRotationMatrix(m);
+}
+
 // append one [lon,lat,height_m] point, keeping the trail bounded
 function pushPoint(e,pt){
   e.pts.push(pt);
   if(e.pts.length>MAX_TRAIL) e.pts.splice(0,e.pts.length-MAX_TRAIL);
   e._pos=Cesium.Cartesian3.fromDegrees(pt[0],pt[1],pt[2]);
   e._trail=Cesium.Cartesian3.fromDegreesArrayHeights([].concat(...e.pts));
+  updateOrientation(e);
   e.lastSeen=Date.now();
+  if(viewer.scene.requestRenderMode) viewer.scene.requestRender();
 }
 
 // initial snapshot from /live.json: paint whole recent tracks (does not duplicate)
@@ -330,6 +363,7 @@ function snapshot(a){
   const last=e.pts[e.pts.length-1];
   e._pos=Cesium.Cartesian3.fromDegrees(last[0],last[1],last[2]);
   e._trail=Cesium.Cartesian3.fromDegreesArrayHeights([].concat(...e.pts));
+  updateOrientation(e);   // seed heading from the snapshot trail if it has moved enough
   e.lastSeen=Date.now();
 }
 
