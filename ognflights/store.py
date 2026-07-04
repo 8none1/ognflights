@@ -161,6 +161,28 @@ class Store:
         ).fetchall()
         return [Fix(*r) for r in rows]
 
+    def recent_airborne(self, now_ts: int, window_s: int, min_alt_ft: float
+                         ) -> list[tuple[str, str, int, float]]:
+        """Aircraft to re-acquire after a restart.
+
+        Returns (address, address_type, last_ts, last_alt_ft) for each address whose
+        most recent fix is within `window_s` of `now_ts` and was above `min_alt_ft`
+        (a clear-flight altitude, so aircraft that have landed are not re-followed).
+        address_type comes from the devices table so the caller can reconstruct the
+        APRS source callsign for the buddy filter.
+        """
+        since = now_ts - window_s
+        rows = self.db.execute(
+            """SELECT f.address, COALESCE(d.address_type, ''), m.mts, f.alt_ft
+               FROM (SELECT address, MAX(ts) AS mts FROM fixes
+                     WHERE ts >= ? GROUP BY address) m
+               JOIN fixes f ON f.address = m.address AND f.ts = m.mts
+               LEFT JOIN devices d ON d.address = f.address
+               WHERE f.alt_ft > ?""",
+            (since, min_alt_ft),
+        ).fetchall()
+        return [(a, t, ts, alt) for (a, t, ts, alt) in rows]
+
     def addresses_for_reg(self, reg: str) -> list[str]:
         """Device addresses whose registration or CN matches `reg` (substring, case-insensitive)."""
         like = f"%{reg.upper()}%"

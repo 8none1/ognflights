@@ -33,6 +33,13 @@ FOLLOW_IDLE_TIMEOUT_S = 600
 # Buffer this many seconds of an aircraft's pre-ownership fixes so we keep the launch roll.
 LAUNCH_BUFFER_S = 60
 
+# Restart recovery: on `watch` startup, re-acquire aircraft that were still airborne
+# and recently heard, so a container restart no longer loses a flight in progress.
+# An aircraft qualifies if its most recent stored fix is within RECOVERY_WINDOW_S and
+# it was clearly airborne (alt above field elevation by more than RECOVERY_MIN_AGL_FT).
+RECOVERY_WINDOW_S = 3600
+RECOVERY_MIN_AGL_FT = 200
+
 # Storage: one SQLite file per calendar year (data/ogn-YYYY.sqlite), kept indefinitely.
 DATA_DIR = "data"
 
