@@ -134,9 +134,10 @@ def watch(ddb: DDB, max_seconds: int | None = None, commit_every: int = 100,
 
             if b.source in owned:
                 dev = ddb.lookup(b.address)
-                store.add_fix(b); store.upsert_device(b, dev)
-                n += 1
-                _publish(b, dev)
+                stored = store.add_fix(b); store.upsert_device(b, dev)
+                if stored:
+                    n += 1
+                    _publish(b, dev)   # only new fixes reach the live view
             else:
                 buf = buffers[b.source]; buf.append(b)
                 cutoff = b.ts.timestamp() - config.LAUNCH_BUFFER_S
@@ -151,9 +152,11 @@ def watch(ddb: DDB, max_seconds: int | None = None, commit_every: int = 100,
                     owned.add(b.source); armed.discard(b.source)
                     for pb in buf:
                         pdev = ddb.lookup(pb.address)
-                        store.add_fix(pb); store.upsert_device(pb, pdev)
-                        _publish(pb, pdev)
-                    n += len(buf); buffers.pop(b.source, None)
+                        pstored = store.add_fix(pb); store.upsert_device(pb, pdev)
+                        if pstored:
+                            n += 1
+                            _publish(pb, pdev)   # only new fixes reach the live view
+                    buffers.pop(b.source, None)
                     client.set_filter(build_filter())
                     logger.info("launch: following %s (%d aircraft)", b.source, len(owned))
 

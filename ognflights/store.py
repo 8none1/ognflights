@@ -57,18 +57,64 @@ class Store:
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.execute("PRAGMA synchronous=NORMAL")
         self.db.executescript(SCHEMA)
+        self._dedup_fixes()
         self.db.commit()
+
+    def _fixes_index_cols(self, name: str) -> list[str]:
+        return [r[2] for r in self.db.execute(f"PRAGMA index_info({name})").fetchall()]
+
+    def _dedup_fixes(self) -> None:
+        """Guarantee exactly one row per (address, ts), backed by a UNIQUE index.
+
+        The same beacon reaches us once per ground receiver that heard it, so a
+        DB must dedup on (address, ts). The current schema does this with the
+        fixes PRIMARY KEY, whose autoindex is UNIQUE on (address, ts) - in that
+        case this is a no-op and we must NOT add a second, redundant unique index
+        (which would double per-insert B-tree maintenance). A legacy DB created
+        without that constraint could hold duplicates and needs bringing into
+        line. Idempotent and cheap once a suitable unique index exists, so it is
+        safe to run on every open, including at container startup.
+        """
+        idx = self.db.execute("PRAGMA index_list(fixes)").fetchall()
+        # PRAGMA index_list columns: seq, name, unique, origin, partial
+        for _seq, name, uniq, *_ in idx:
+            if uniq and self._fixes_index_cols(name) == ["address", "ts"]:
+                return   # a unique index on exactly (address, ts) already exists
+        # No unique (address, ts) index yet. Dedup first (a non-unique index on
+        # those columns, or none at all, may have allowed duplicate rows), then
+        # add the unique index. If a NON-UNIQUE index on exactly (address, ts)
+        # exists, drop it so we upgrade in place rather than keeping two indexes
+        # on identical columns.
+        self.db.execute(
+            "DELETE FROM fixes WHERE rowid NOT IN "
+            "(SELECT MIN(rowid) FROM fixes GROUP BY address, ts)"
+        )
+        for _seq, name, uniq, *_ in idx:
+            if not uniq and not name.startswith("sqlite_") \
+                    and self._fixes_index_cols(name) == ["address", "ts"]:
+                self.db.execute(f"DROP INDEX {name}")
+        self.db.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS ux_fixes_addr_ts ON fixes(address, ts)"
+        )
 
     def close(self) -> None:
         self.db.close()
 
-    def add_fix(self, b) -> None:
-        """Insert a Beacon (ignores duplicate address+ts)."""
+    def add_fix(self, b) -> bool:
+        """Insert a Beacon, ignoring a duplicate (address, ts).
+
+        The same fix reaches us once per ground receiver that heard the aircraft;
+        only the first is stored. Returns True if this call actually stored a new
+        row, False if it was a duplicate that was ignored. Callers use this to
+        avoid re-publishing an already-seen fix to the live view.
+        """
+        before = self.db.total_changes
         self.db.execute(
             "INSERT OR IGNORE INTO fixes VALUES (?,?,?,?,?,?,?,?)",
             (b.address, int(b.ts.timestamp()), b.lat, b.lon, b.altitude_ft,
              b.speed_kt, b.climb_fpm, b.receiver),
         )
+        return self.db.total_changes > before
 
     def upsert_device(self, b, dev) -> None:
         reg = dev.registration if dev else None
