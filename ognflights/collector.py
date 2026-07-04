@@ -102,6 +102,30 @@ def watch(ddb: DDB, max_seconds: int | None = None, commit_every: int = 100,
     armed: set[str] = set()          # seen low at the field, awaiting a climb-out
     last_seen: dict[str, float] = {}
     buffers: dict[str, deque] = defaultdict(deque)
+    # In-memory fast path: highest fix ts stored per source callsign. The same
+    # beacon reaches us once per ground receiver that heard it, so most beacons
+    # are duplicates; this lets us drop them without touching SQLite at all.
+    # Keyed by b.source (same lifecycle as `owned`), pruned when we stop
+    # following an aircraft so it cannot grow unbounded. The DB UNIQUE(address,
+    # ts) index + INSERT OR IGNORE remains the correctness backstop for the
+    # narrow restart/out-of-order case where this map is empty or behind.
+    max_ts: dict[str, int] = {}
+
+    def store_fix(src, b, dev) -> bool:
+        """Store a fix, using the in-memory max-ts pre-filter as the fast path.
+
+        Returns True only if the fix was genuinely new (passed the pre-filter and
+        was actually inserted), so the caller knows whether to publish it live.
+        """
+        ts = int(b.ts.timestamp())
+        prev = max_ts.get(src)
+        if prev is not None and ts <= prev:
+            return False                       # duplicate/out-of-order: skip SQLite entirely
+        stored = store.add_fix(b)              # unique index is the backstop
+        store.upsert_device(b, dev)
+        if stored:
+            max_ts[src] = ts
+        return stored
 
     def build_filter() -> str:
         return base_filter + (" b/" + "/".join(sorted(owned)) if owned else "")
@@ -134,8 +158,7 @@ def watch(ddb: DDB, max_seconds: int | None = None, commit_every: int = 100,
 
             if b.source in owned:
                 dev = ddb.lookup(b.address)
-                stored = store.add_fix(b); store.upsert_device(b, dev)
-                if stored:
+                if store_fix(b.source, b, dev):
                     n += 1
                     _publish(b, dev)   # only new fixes reach the live view
             else:
@@ -152,8 +175,7 @@ def watch(ddb: DDB, max_seconds: int | None = None, commit_every: int = 100,
                     owned.add(b.source); armed.discard(b.source)
                     for pb in buf:
                         pdev = ddb.lookup(pb.address)
-                        pstored = store.add_fix(pb); store.upsert_device(pb, pdev)
-                        if pstored:
+                        if store_fix(b.source, pb, pdev):
                             n += 1
                             _publish(pb, pdev)   # only new fixes reach the live view
                     buffers.pop(b.source, None)
@@ -168,6 +190,8 @@ def watch(ddb: DDB, max_seconds: int | None = None, commit_every: int = 100,
                 gone = [s for s in owned if now - last_seen.get(s, 0) > config.FOLLOW_IDLE_TIMEOUT_S]
                 if gone:
                     owned.difference_update(gone)
+                    for s in gone:
+                        max_ts.pop(s, None)     # stop tracking ts once we drop the aircraft
                     client.set_filter(build_filter())
                     logger.info("landed/lost %d, following %d", len(gone), len(owned))
                 stale = [s for s in list(buffers) if now - last_seen.get(s, 0) > config.LAUNCH_BUFFER_S * 2]
