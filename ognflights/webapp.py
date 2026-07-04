@@ -340,7 +340,14 @@ function updateOrientation(e){
   const vel=Cesium.Cartesian3.subtract(cur,lookback,new Cesium.Cartesian3());
   if(Cesium.Cartesian3.magnitude(vel)<ORIENT_STATIONARY_M) return; // keep last-good
   const m=Cesium.Transforms.rotationMatrixFromPositionVelocity(cur,vel,Cesium.Ellipsoid.WGS84);
-  e._ori=Cesium.Quaternion.fromRotationMatrix(m);
+  const q=Cesium.Quaternion.fromRotationMatrix(m);
+  // Guard: a near-vertical velocity makes the matrix degenerate, so fromRotationMatrix can
+  // return a non-unit or NaN quaternion. Cesium builds the model matrix via
+  // Matrix3.fromQuaternion WITHOUT normalising, so a non-unit quaternion SCALES the model
+  // (it balloons in size). Normalise, and keep the last-good heading if anything is not finite.
+  if(isFinite(q.x)&&isFinite(q.y)&&isFinite(q.z)&&isFinite(q.w)){
+    e._ori=Cesium.Quaternion.normalize(q,new Cesium.Quaternion());
+  }
 }
 
 // append one [lon,lat,height_m] point, keeping the trail bounded
