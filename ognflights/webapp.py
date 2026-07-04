@@ -292,7 +292,7 @@ function ensure(addr,name,color,model){
     return e;
   }
   const col=Cesium.Color.fromCssColorString(color);
-  e=ac[addr]={color:color,name:name,model:model,pts:[]};
+  e=ac[addr]={color:color,name:name,model:model,pts:[],maxTs:0};
   e.plane=viewer.entities.add({
     name:name,
     position:new Cesium.CallbackProperty(()=>e._pos,false),
@@ -367,6 +367,7 @@ function snapshot(a){
   if(!pts.length) return;
   const e=ensure(a.address,a.name,a.color,a.model);
   e.pts=pts.slice(-MAX_TRAIL);
+  e.maxTs=a.last_ts||0;   // so streamed duplicates already in this snapshot are dropped
   const last=e.pts[e.pts.length-1];
   e._pos=Cesium.Cartesian3.fromDegrees(last[0],last[1],last[2]);
   e._trail=Cesium.Cartesian3.fromDegreesArrayHeights([].concat(...e.pts));
@@ -377,6 +378,12 @@ function snapshot(a){
 // a single streamed fix event
 function onEvent(ev){
   const e=ensure(ev.addr,ev.label||ev.name,ev.color,ev.model);
+  e.lastSeen=Date.now();   // keep it alive even if this fix is a duplicate
+  // OGN aircraft are heard by several ground receivers, so the same fix arrives more
+  // than once and late relays arrive out of order. Only accept a strictly-newer fix, so
+  // the trail never jumps backwards (which showed as cross-loop / sawtooth artefacts).
+  if(ev.ts!=null && ev.ts<=e.maxTs) return;
+  if(ev.ts!=null) e.maxTs=ev.ts;
   pushPoint(e,[ev.lon,ev.lat,ev.height_m]);
   renderLegend();
 }
