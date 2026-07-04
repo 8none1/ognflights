@@ -125,7 +125,7 @@ def _live_feed(data_dir: str) -> dict:
             ).fetchone()
             ac_type = row[0] if row else ""
             mk = _live_model(model_str, ac_type)
-            pts = [[round(lon, 6), round(lat, 6), live_height_m(alt)]
+            pts = [[round(lon, 6), round(lat, 6), live_height_m(alt), int(_ts)]
                    for (_ts, lat, lon, alt) in fixes]
             out["aircraft"].append({
                 "address": addr,
@@ -281,6 +281,14 @@ const GRACE_MS=60000;    // remove an aircraft this long after its last event
 const MAX_TRAIL=600;     // bounded recent-points trail per aircraft
 const ORIENT_MIN_M=30;   // walk back through the trail until at least this far behind
 const ORIENT_STATIONARY_M=10; // below this displacement, keep the last-good heading (no spin)
+// --- pitch tuning (decoupled from heading; eyeball these on the live site) ---
+// Heading comes from the short ORIENT_MIN_M lookback above (responsive). Pitch is
+// computed separately over a LONGER window so OGN altitude noise stops the model
+// porpoising: raw climb angle over the window, EMA-smoothed, then hard-clamped.
+const PITCH_WINDOW_S=15;   // seconds of history for the raw climb-angle baseline
+const PITCH_WINDOW_M=200;  // fallback baseline (metres) when timestamps are missing
+const PITCH_EMA=0.15;      // exponential smoothing weight for the new raw pitch
+const PITCH_MAX_DEG=25;    // clamp; still reads as a real winch climb, kills the noise
 const ac={};             // address -> {plane, trail, color, name, model, pts[], lastSeen, _ori}
 let trailsOn=true;       // toggled by the "Trail" checkbox in the legend
 
@@ -292,7 +300,7 @@ function ensure(addr,name,color,model){
     return e;
   }
   const col=Cesium.Color.fromCssColorString(color);
-  e=ac[addr]={color:color,name:name,model:model,pts:[],maxTs:0};
+  e=ac[addr]={color:color,name:name,model:model,pts:[],maxTs:0,_pitch:0};
   e.plane=viewer.entities.add({
     name:name,
     position:new Cesium.CallbackProperty(()=>e._pos,false),
@@ -328,7 +336,9 @@ function updateOrientation(e){
   if(n<2) return;
   const last=e.pts[n-1];
   const cur=Cesium.Cartesian3.fromDegrees(last[0],last[1],last[2]);
-  // walk back until at least ORIENT_MIN_M behind, else use the oldest point we have
+  const curTs=last[3];
+  // HEADING baseline: walk back until at least ORIENT_MIN_M behind (else oldest point).
+  // This short, responsive lookback sets which way the nose points.
   let lookback=null;
   for(let i=n-2;i>=0;i--){
     const p=e.pts[i];
@@ -337,8 +347,51 @@ function updateOrientation(e){
     if(Cesium.Cartesian3.distance(cur,c)>=ORIENT_MIN_M) break;
   }
   if(!lookback) return;
-  const vel=Cesium.Cartesian3.subtract(cur,lookback,new Cesium.Cartesian3());
+  let vel=Cesium.Cartesian3.subtract(cur,lookback,new Cesium.Cartesian3());
   if(Cesium.Cartesian3.magnitude(vel)<ORIENT_STATIONARY_M) return; // keep last-good
+
+  // PITCH baseline: a SEPARATE, longer window so altitude noise over a few tens of
+  // metres cannot swing the nose. Prefer a time window (PITCH_WINDOW_S) when the
+  // points carry timestamps, else fall back to a longer distance (PITCH_WINDOW_M).
+  let pback=null;
+  for(let i=n-2;i>=0;i--){
+    const p=e.pts[i];
+    pback=p;
+    if(curTs!=null && p[3]!=null){
+      if(curTs-p[3]>=PITCH_WINDOW_S) break;
+    }else{
+      const c=Cesium.Cartesian3.fromDegrees(p[0],p[1],p[2]);
+      if(Cesium.Cartesian3.distance(cur,c)>=PITCH_WINDOW_M) break;
+    }
+  }
+  if(pback){
+    // raw climb angle over the window: atan2(altitude change, horizontal distance)
+    const dAlt=last[2]-pback[2];
+    // horizontal distance on the ellipsoid (ignore height) via the two lon/lat pairs
+    const flatCur=Cesium.Cartesian3.fromDegrees(last[0],last[1],0);
+    const flatOld=Cesium.Cartesian3.fromDegrees(pback[0],pback[1],0);
+    const dHoriz=Cesium.Cartesian3.distance(flatCur,flatOld);
+    if(dHoriz>1){
+      const rawPitch=Math.atan2(dAlt,dHoriz);
+      e._pitch=e._pitch*(1-PITCH_EMA)+rawPitch*PITCH_EMA;
+    }
+  }
+  // clamp the smoothed pitch, then REBUILD the velocity so its horizontal direction
+  // (and thus heading) is unchanged but its vertical component encodes exactly _pitch.
+  const maxP=Cesium.Math.toRadians(PITCH_MAX_DEG);
+  const pitch=Math.max(-maxP,Math.min(maxP,e._pitch));
+  const up=Cesium.Ellipsoid.WGS84.geodeticSurfaceNormal(cur,new Cesium.Cartesian3());
+  const upComp=Cesium.Cartesian3.dot(vel,up);
+  // horizontal part = vel minus its up-component; keeps the along-track direction.
+  const horiz=Cesium.Cartesian3.subtract(
+    vel,Cesium.Cartesian3.multiplyByScalar(up,upComp,new Cesium.Cartesian3()),
+    new Cesium.Cartesian3());
+  const H=Cesium.Cartesian3.magnitude(horiz);
+  if(H>1e-6){
+    // newVel = horiz + up*(H*tan(pitch)); its pitch = atan2(H*tan p, H) = p exactly.
+    const rise=Cesium.Cartesian3.multiplyByScalar(up,H*Math.tan(pitch),new Cesium.Cartesian3());
+    vel=Cesium.Cartesian3.add(horiz,rise,new Cesium.Cartesian3());
+  }
   const m=Cesium.Transforms.rotationMatrixFromPositionVelocity(cur,vel,Cesium.Ellipsoid.WGS84);
   const q=Cesium.Quaternion.fromRotationMatrix(m);
   // Guard: a near-vertical velocity makes the matrix degenerate, so fromRotationMatrix can
@@ -350,12 +403,20 @@ function updateOrientation(e){
   }
 }
 
-// append one [lon,lat,height_m] point, keeping the trail bounded
+// flatten only lon/lat/height for the polyline; points now carry a 4th elem (ts)
+// used solely by the pitch window, which must not leak into the trail geometry.
+function trailPositions(pts){
+  const flat=[];
+  for(const p of pts){ flat.push(p[0],p[1],p[2]); }
+  return Cesium.Cartesian3.fromDegreesArrayHeights(flat);
+}
+
+// append one [lon,lat,height_m,ts] point, keeping the trail bounded
 function pushPoint(e,pt){
   e.pts.push(pt);
   if(e.pts.length>MAX_TRAIL) e.pts.splice(0,e.pts.length-MAX_TRAIL);
   e._pos=Cesium.Cartesian3.fromDegrees(pt[0],pt[1],pt[2]);
-  e._trail=Cesium.Cartesian3.fromDegreesArrayHeights([].concat(...e.pts));
+  e._trail=trailPositions(e.pts);
   updateOrientation(e);
   e.lastSeen=Date.now();
   if(viewer.scene.requestRenderMode) viewer.scene.requestRender();
@@ -370,7 +431,7 @@ function snapshot(a){
   e.maxTs=a.last_ts||0;   // so streamed duplicates already in this snapshot are dropped
   const last=e.pts[e.pts.length-1];
   e._pos=Cesium.Cartesian3.fromDegrees(last[0],last[1],last[2]);
-  e._trail=Cesium.Cartesian3.fromDegreesArrayHeights([].concat(...e.pts));
+  e._trail=trailPositions(e.pts);
   updateOrientation(e);   // seed heading from the snapshot trail if it has moved enough
   e.lastSeen=Date.now();
 }
@@ -384,7 +445,7 @@ function onEvent(ev){
   // the trail never jumps backwards (which showed as cross-loop / sawtooth artefacts).
   if(ev.ts!=null && ev.ts<=e.maxTs) return;
   if(ev.ts!=null) e.maxTs=ev.ts;
-  pushPoint(e,[ev.lon,ev.lat,ev.height_m]);
+  pushPoint(e,[ev.lon,ev.lat,ev.height_m,ev.ts]);
   renderLegend();
 }
 
