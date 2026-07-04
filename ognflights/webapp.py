@@ -285,10 +285,12 @@ const ORIENT_STATIONARY_M=10; // below this displacement, keep the last-good hea
 // Heading comes from the short ORIENT_MIN_M lookback above (responsive). Pitch is
 // computed separately over a LONGER window so OGN altitude noise stops the model
 // porpoising: raw climb angle over the window, EMA-smoothed, then hard-clamped.
-const PITCH_WINDOW_S=15;   // seconds of history for the raw climb-angle baseline
+const PITCH_WINDOW_S=40;   // seconds of history for the least-squares climb-rate fit
 const PITCH_WINDOW_M=200;  // fallback baseline (metres) when timestamps are missing
-const PITCH_EMA=0.15;      // exponential smoothing weight for the new raw pitch
-const PITCH_MAX_DEG=25;    // clamp; still reads as a real winch climb, kills the noise
+const PITCH_EMA=0.15;      // exponential smoothing weight on top of the fitted pitch
+const PITCH_MAX_DEG=15;    // clamp; OGN altitude is too noisy to trust steeper angles
+const PITCH_MIN_SPEED_MS=8;// below this ground speed (~15 kt) hold level: taxiing/slow
+const PITCH_GROUND_M=15;   // within this height above the field, hold level: on the ground
 const ac={};             // address -> {plane, trail, color, name, model, pts[], lastSeen, _ori}
 let trailsOn=true;       // toggled by the "Trail" checkbox in the legend
 
@@ -350,32 +352,43 @@ function updateOrientation(e){
   let vel=Cesium.Cartesian3.subtract(cur,lookback,new Cesium.Cartesian3());
   if(Cesium.Cartesian3.magnitude(vel)<ORIENT_STATIONARY_M) return; // keep last-good
 
-  // PITCH baseline: a SEPARATE, longer window so altitude noise over a few tens of
-  // metres cannot swing the nose. Prefer a time window (PITCH_WINDOW_S) when the
-  // points carry timestamps, else fall back to a longer distance (PITCH_WINDOW_M).
-  let pback=null;
+  // PITCH: OGN altitude is very noisy (tens of metres of jitter), so a two-point
+  // difference gives a wild angle, and at low speed a tiny height change is a huge angle.
+  // Fit a least-squares slope of height vs time over a long window for a noise-robust
+  // vertical speed, take horizontal speed from the actual ground-track path length
+  // (turn-safe), and pitch = atan2(vspeed, hspeed). Hold the model LEVEL on the ground or
+  // when moving too slowly to have a meaningful flight-path angle (taxiing).
+  let si=n-1;
   for(let i=n-2;i>=0;i--){
-    const p=e.pts[i];
-    pback=p;
-    if(curTs!=null && p[3]!=null){
-      if(curTs-p[3]>=PITCH_WINDOW_S) break;
+    si=i;
+    if(curTs!=null && e.pts[i][3]!=null){
+      if(curTs-e.pts[i][3]>=PITCH_WINDOW_S) break;
     }else{
-      const c=Cesium.Cartesian3.fromDegrees(p[0],p[1],p[2]);
-      if(Cesium.Cartesian3.distance(cur,c)>=PITCH_WINDOW_M) break;
+      const c=Cesium.Cartesian3.fromDegrees(e.pts[i][0],e.pts[i][1],0);
+      const fc=Cesium.Cartesian3.fromDegrees(last[0],last[1],0);
+      if(Cesium.Cartesian3.distance(fc,c)>=PITCH_WINDOW_M) break;
     }
   }
-  if(pback){
-    // raw climb angle over the window: atan2(altitude change, horizontal distance)
-    const dAlt=last[2]-pback[2];
-    // horizontal distance on the ellipsoid (ignore height) via the two lon/lat pairs
-    const flatCur=Cesium.Cartesian3.fromDegrees(last[0],last[1],0);
-    const flatOld=Cesium.Cartesian3.fromDegrees(pback[0],pback[1],0);
-    const dHoriz=Cesium.Cartesian3.distance(flatCur,flatOld);
-    if(dHoriz>1){
-      const rawPitch=Math.atan2(dAlt,dHoriz);
-      e._pitch=e._pitch*(1-PITCH_EMA)+rawPitch*PITCH_EMA;
+  let rawPitch=0;   // default level: ground, too slow, or not enough window yet
+  const win=e.pts.slice(si);
+  if(win.length>=3 && win[0][3]!=null && curTs!=null){
+    let sx=0,sy=0,sxx=0,sxy=0,path=0,prev=null;
+    const k=win.length, t0=win[0][3];
+    for(const p of win){
+      const x=p[3]-t0, y=p[2];
+      sx+=x; sy+=y; sxx+=x*x; sxy+=x*y;
+      const fp=Cesium.Cartesian3.fromDegrees(p[0],p[1],0);
+      if(prev) path+=Cesium.Cartesian3.distance(prev,fp);
+      prev=fp;
+    }
+    const denom=k*sxx-sx*sx, dt=curTs-t0;
+    const hspeed=dt>0?path/dt:0;          // m/s ground speed along the track (turn-safe)
+    if(denom>1e-6 && hspeed>=PITCH_MIN_SPEED_MS && last[2]>PITCH_GROUND_M){
+      const vspeed=(k*sxy-sx*sy)/denom;   // m/s, least-squares slope of height vs time
+      rawPitch=Math.atan2(vspeed,hspeed);
     }
   }
+  e._pitch=e._pitch*(1-PITCH_EMA)+rawPitch*PITCH_EMA;  // eases toward level on the ground
   // clamp the smoothed pitch, then REBUILD the velocity so its horizontal direction
   // (and thus heading) is unchanged but its vertical component encodes exactly _pitch.
   const maxP=Cesium.Math.toRadians(PITCH_MAX_DEG);
