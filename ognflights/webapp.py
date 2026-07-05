@@ -284,8 +284,7 @@ const ORIENT_STATIONARY_M=10; // below this displacement, keep the last-good hea
 // Pitch: OGN altitude is noisy, so a single short baseline gives a wildly exaggerated
 // angle. Fit the flight-path angle over a LONG window of many points so the nose matches
 // the real track slope, then smooth and clamp. Tune these if it looks too lively/sluggish.
-const PITCH_WINDOW_S=45;  // seconds of track used for the least-squares climb-rate fit
-const PITCH_EMA=0.12;     // extra exponential smoothing on top of the fit (lower = smoother)
+const PITCH_WINDOW_S=30;  // seconds of track for the least-squares climb-rate fit (this IS the smoothing)
 const PITCH_MAX_DEG=45;   // safety clamp (real steep climbs/descents still show)
 const ac={};             // address -> {plane, trail, color, name, model, pts[], lastSeen, _ori}
 let trailsOn=true;       // toggled by the "Trail" checkbox in the legend
@@ -373,7 +372,9 @@ function updateOrientation(e){
       if(den>1e-6 && hs>0.5) rawPitch=Math.atan2((k*sxy-sx*sy)/den, hs);
     }
   }
-  e._pitch=(e._pitch==null||isNaN(e._pitch))?rawPitch:e._pitch*(1-PITCH_EMA)+rawPitch*PITCH_EMA;
+  // Use the fit directly. The window already smooths; an extra EMA accumulator only added
+  // lag that persisted across frames (nose stuck up after levelling off, until a reload).
+  e._pitch=rawPitch;
   const maxP=Cesium.Math.toRadians(PITCH_MAX_DEG);
   const pitch=Math.max(-maxP,Math.min(maxP,e._pitch));
   // velocity = heading direction tilted by the smoothed pitch, wings level.
