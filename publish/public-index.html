@@ -84,10 +84,11 @@ function buildReadout(samples){
   }
   return {altFt, varioKt};
 }
-function fmtReadout(ft, kt){
+// three lines: short callsign, height above the field in feet, then signed climb rate in knots.
+function fmtReadout(cs, ft, kt){
   const ftStr=Math.round(ft).toLocaleString("en-GB");
   const sign=kt>=0?"+":"-";
-  return ftStr+" ft\n"+sign+Math.abs(kt).toFixed(1)+" kt";
+  return (cs?cs+"\n":"")+ftStr+" ft\n"+sign+Math.abs(kt).toFixed(1)+" kt";
 }
 
 // --- per-day render state: everything built from a DATA dict, torn down on day change ---
@@ -150,7 +151,7 @@ function renderData(DATA){
         text:new Cesium.CallbackProperty(function(time){
           const ft=ro.altFt.getValue(time), kt=ro.varioKt.getValue(time);
           if(ft===undefined||kt===undefined) return "";
-          return fmtReadout(ft, kt);
+          return fmtReadout(fl.cs, ft, kt);
         }, false),
         show:readoutsOn,
         font:"12px sans-serif",

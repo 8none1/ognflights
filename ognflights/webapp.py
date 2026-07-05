@@ -300,26 +300,69 @@ const PITCH_WINDOW_S=30;  // seconds of track for the least-squares climb-rate f
 const PITCH_MAX_DEG=45;   // safety clamp (real steep climbs/descents still show)
 const M_TO_FT=1/0.3048, MS_TO_KT=1/0.514444;  // metres->feet, vertical m/s -> knots
 const VARIO_WIN_S=18;     // vario smoothing window (s): least-squares slope of height vs time
+// Despike: some aircraft (notably ADS-B tugs) occasionally report a single position
+// ~150-300 m off that snaps back on the next fix ("out-and-back" spike). It draws a stray
+// spur on the trail, flips the nose for a frame and jumps the model. We drop such isolated
+// interior points at the DISPLAY layer only (raw data is untouched). A point is a spike when
+// it juts far from BOTH neighbours while the neighbours themselves are close together.
+const SPIKE_MIN_M=80;    // both neighbour hops must exceed this for a point to count as a spike
+const SPIKE_RATIO=2.5;   // ...and the out-and-back detour must be this much longer than the direct hop
 const ac={};             // address -> {plane, trail, color, name, model, pts[], lastSeen, _ori}
 let trailsOn=true;       // toggled by the "Trail" checkbox in the legend
 let readoutsOn=true;     // toggled by the "altitude / climb readouts" checkbox in the settings panel
 
-// same format as the replay's fmtReadout: height above the field in feet + signed climb rate in knots
-function fmtReadout(ft, kt){
+// short callsign = the bit in square brackets in the aircraft name (e.g. "G-ELSB [SB]" -> "SB",
+// "G-CKFY [KFY]" -> "KFY"); fall back to the full name/registration if there are no brackets.
+function shortCallsign(name){
+  if(!name) return "";
+  const m=name.match(/\[([^\]]+)\]/);
+  return m?m[1].trim():name.trim();
+}
+
+// same format as the replay's fmtReadout: short callsign, then height above the field in feet,
+// then signed climb rate in knots (three lines).
+function fmtReadout(cs, ft, kt){
   const ftStr=Math.round(ft).toLocaleString("en-GB");
   const sign=kt>=0?"+":"-";
-  return ftStr+" ft\n"+sign+Math.abs(kt).toFixed(1)+" kt";
+  return (cs?cs+"\n":"")+ftStr+" ft\n"+sign+Math.abs(kt).toFixed(1)+" kt";
+}
+
+// Remove isolated out-and-back spike points from a track. A point p[i] is a spike if it is far
+// from BOTH neighbours AND the two hops out+back are much longer than the direct neighbour-to-
+// neighbour hop (so the point juts out and comes straight back while the neighbours stay close).
+// Turn-safe: a genuine turn point sits near at least one neighbour, or the neighbours are far
+// apart, so the ratio test fails. Horizontal distance only (altitude ignored). First/last kept.
+function haversineM(a,b){
+  const R=6371000, toR=Math.PI/180;
+  const dLat=(b[1]-a[1])*toR, dLon=(b[0]-a[0])*toR;
+  const la1=a[1]*toR, la2=b[1]*toR;
+  const h=Math.sin(dLat/2)**2 + Math.cos(la1)*Math.cos(la2)*Math.sin(dLon/2)**2;
+  return 2*R*Math.asin(Math.min(1,Math.sqrt(h)));
+}
+function despike(pts){
+  if(pts.length<3) return pts;
+  const out=[pts[0]];
+  for(let i=1;i<pts.length-1;i++){
+    const prev=out[out.length-1], p=pts[i], next=pts[i+1];
+    const d0=haversineM(prev,p), d1=haversineM(p,next), dd=haversineM(prev,next);
+    if(d0>SPIKE_MIN_M && d1>SPIKE_MIN_M && (d0+d1)>SPIKE_RATIO*dd){
+      continue;  // isolated out-and-back spike: drop it
+    }
+    out.push(p);
+  }
+  out.push(pts[pts.length-1]);
+  return out;
 }
 
 // create-or-update an aircraft entity from a position (lon,lat,height_m)
 function ensure(addr,name,color,model){
   let e=ac[addr];
   if(e){
-    if(name){ e.name=name; e.plane.name=name; e.trail.name=name+" trail"; }
+    if(name){ e.name=name; e.plane.name=name; e.trail.name=name+" trail"; e._cs=shortCallsign(name); }
     return e;
   }
   const col=Cesium.Color.fromCssColorString(color);
-  e=ac[addr]={color:color,name:name,model:model,pts:[],maxTs:0,_pitch:0};
+  e=ac[addr]={color:color,name:name,model:model,pts:[],maxTs:0,_pitch:0,_cs:shortCallsign(name)};
   e.plane=viewer.entities.add({
     name:name,
     position:new Cesium.CallbackProperty(()=>e._pos,false),
@@ -335,7 +378,7 @@ function ensure(addr,name,color,model){
     label:{
       text:new Cesium.CallbackProperty(()=>{
         if(e._alt==null||e._vario==null) return "";
-        return fmtReadout(e._alt, e._vario);
+        return fmtReadout(e._cs, e._alt, e._vario);
       },false),
       show:readoutsOn,
       font:"12px sans-serif",
@@ -373,9 +416,12 @@ function applyTrails(){
 // correction is needed). Below ORIENT_STATIONARY_M we keep the last-good heading so
 // parked/slow gliders do not spin randomly.
 function updateOrientation(e){
-  const n=e.pts.length;
+  // Drive heading/pitch/vario/position off the DESPIKED trail so a single outlier fix does not
+  // flip the nose or jump the model. e.dpts is set alongside e._trail (see pushPoint/snapshot).
+  const dp=e.dpts||e.pts;
+  const n=dp.length;
   if(n<1) return;
-  const last=e.pts[n-1];
+  const last=dp[n-1];
   const curTs=last[3];
   // Readout altitude: height above the field in feet (height_m is already above-field, see
   // live_height_m). Vario: least-squares slope of height(m) vs time over a trailing VARIO_WIN_S
@@ -385,8 +431,8 @@ function updateOrientation(e){
   e._alt=last[2]*M_TO_FT;
   if(n>=2 && curTs!=null){
     let vs=n-1;
-    for(let i=n-2;i>=0;i--){ vs=i; if(e.pts[i][3]!=null && curTs-e.pts[i][3]>=VARIO_WIN_S) break; }
-    const vwin=e.pts.slice(vs);
+    for(let i=n-2;i>=0;i--){ vs=i; if(dp[i][3]!=null && curTs-dp[i][3]>=VARIO_WIN_S) break; }
+    const vwin=dp.slice(vs);
     let cnt=0,sx=0,sy=0,sxx=0,sxy=0;
     for(const p of vwin){ if(p[3]==null) continue; const x=p[3]-vwin[0][3],y=p[2]; cnt++; sx+=x; sy+=y; sxx+=x*x; sxy+=x*y; }
     const den=cnt*sxx-sx*sx;
@@ -399,7 +445,7 @@ function updateOrientation(e){
   // This short, responsive lookback sets which way the nose points.
   let lookback=null;
   for(let i=n-2;i>=0;i--){
-    const p=e.pts[i];
+    const p=dp[i];
     const c=Cesium.Cartesian3.fromDegrees(p[0],p[1],p[2]);
     lookback=c;
     if(Cesium.Cartesian3.distance(cur,c)>=ORIENT_MIN_M) break;
@@ -420,8 +466,8 @@ function updateOrientation(e){
   let rawPitch=0;
   if(curTs!=null){
     let s=n-1;
-    for(let i=n-2;i>=0;i--){ s=i; if(e.pts[i][3]!=null && curTs-e.pts[i][3]>=PITCH_WINDOW_S) break; }
-    const win=e.pts.slice(s);
+    for(let i=n-2;i>=0;i--){ s=i; if(dp[i][3]!=null && curTs-dp[i][3]>=PITCH_WINDOW_S) break; }
+    const win=dp.slice(s);
     if(win.length>=4 && win[0][3]!=null){
       let sx=0,sy=0,sxx=0,sxy=0,path=0,prev=null; const k=win.length,t0=win[0][3];
       for(const p of win){
@@ -459,13 +505,21 @@ function trailPositions(pts){
   return Cesium.Cartesian3.fromDegreesArrayHeights(flat);
 }
 
-// append one [lon,lat,height_m,ts] point, keeping the trail bounded
+// append one [lon,lat,height_m,ts] point, keeping the trail bounded, then rebuild the despiked
+// view used for drawing/heading/position (see despike). The model sits on the LAST despiked
+// point, so a spike at the leading edge does not jump it (at most ~1 fix of lag until the spike
+// is confirmed as isolated by the next fix). The trail is bounded by maxTrail, so despike is cheap.
+function refresh(e){
+  e.dpts=despike(e.pts);
+  const dl=e.dpts[e.dpts.length-1];
+  e._pos=Cesium.Cartesian3.fromDegrees(dl[0],dl[1],dl[2]);
+  e._trail=trailPositions(e.dpts);
+  updateOrientation(e);
+}
 function pushPoint(e,pt){
   e.pts.push(pt);
   if(e.pts.length>maxTrail) e.pts.splice(0,e.pts.length-maxTrail);
-  e._pos=Cesium.Cartesian3.fromDegrees(pt[0],pt[1],pt[2]);
-  e._trail=trailPositions(e.pts);
-  updateOrientation(e);
+  refresh(e);
   e.lastSeen=Date.now();
   if(viewer.scene.requestRenderMode) viewer.scene.requestRender();
 }
@@ -477,10 +531,7 @@ function snapshot(a){
   const e=ensure(a.address,a.name,a.color,a.model);
   e.pts=pts.slice(-maxTrail);
   e.maxTs=a.last_ts||0;   // so streamed duplicates already in this snapshot are dropped
-  const last=e.pts[e.pts.length-1];
-  e._pos=Cesium.Cartesian3.fromDegrees(last[0],last[1],last[2]);
-  e._trail=trailPositions(e.pts);
-  updateOrientation(e);   // seed heading from the snapshot trail if it has moved enough
+  refresh(e);             // seed despiked trail/position/heading from the snapshot if it has moved
   e.lastSeen=Date.now();
 }
 
@@ -514,7 +565,8 @@ function prune(){
 function applyTrailLength(){
   for(const e of Object.values(ac)){
     if(e.pts.length>maxTrail) e.pts.splice(0,e.pts.length-maxTrail);
-    e._trail=trailPositions(e.pts);
+    e.dpts=despike(e.pts);
+    e._trail=trailPositions(e.dpts);
   }
   if(viewer.scene.requestRenderMode) viewer.scene.requestRender();
 }

@@ -16,7 +16,7 @@ Each aircraft gets a 3D model chosen from its CGC model string (gliders vs DR-40
 In the viewer: C copies the current camera as --home; number keys pick a model and [ ] yaw it
 (logged so the value can be baked in via --yaw "glider=0,dr400=90").
 """
-import argparse, json, math, os, sys
+import argparse, json, math, os, re, sys
 from datetime import datetime, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -26,6 +26,11 @@ from ognflights.store import Store, store_for_day
 
 FT_TO_M = 0.3048
 GLIDERISH = {"glider", "tow", "motorglider"}
+# Despike (display-layer): drop isolated out-and-back spike points from a track before it is
+# drawn. A point is a spike when it juts far from BOTH neighbours while the neighbours themselves
+# stay close together (an outlier fix that snaps back on the next fix). Raw data is untouched.
+SPIKE_MIN_M = 80.0    # both neighbour hops must exceed this for a point to count as a spike
+SPIKE_RATIO = 2.5     # ...and the out-and-back detour must be this much longer than the direct hop
 CES = "https://cesium.com/downloads/cesiumjs/releases/1.143/Build/Cesium"
 PALETTE = ["#1e90ff", "#32cd32", "#ff4500", "#ff00ff", "#00ffff", "#ffd700", "#ff1493",
            "#7cfc00", "#ff8c00", "#9370db", "#00fa9a", "#dc143c", "#40e0d0", "#ffa07a"]
@@ -139,10 +144,11 @@ function buildReadout(samples){
   }
   return {altFt, varioKt};
 }
-function fmtReadout(ft, kt){
+// three lines: short callsign, height above the field in feet, then signed climb rate in knots.
+function fmtReadout(cs, ft, kt){
   const ftStr=Math.round(ft).toLocaleString("en-GB");
   const sign=kt>=0?"+":"-";
-  return ftStr+" ft\n"+sign+Math.abs(kt).toFixed(1)+" kt";
+  return (cs?cs+"\n":"")+ftStr+" ft\n"+sign+Math.abs(kt).toFixed(1)+" kt";
 }
 
 // --- per-day render state: everything built from a DATA dict, torn down on day change ---
@@ -205,7 +211,7 @@ function renderData(DATA){
         text:new Cesium.CallbackProperty(function(time){
           const ft=ro.altFt.getValue(time), kt=ro.varioKt.getValue(time);
           if(ft===undefined||kt===undefined) return "";
-          return fmtReadout(ft, kt);
+          return fmtReadout(fl.cs, ft, kt);
         }, false),
         show:readoutsOn,
         font:"12px sans-serif",
@@ -493,6 +499,49 @@ def ground_speeds_kt(fixes):
     return out
 
 
+def _haversine_m(a, b):
+    """Horizontal great-circle distance in metres between two (lon, lat) points."""
+    R = 6371000.0
+    la1, la2 = math.radians(a[1]), math.radians(b[1])
+    dlat = math.radians(b[1] - a[1]); dlon = math.radians(b[0] - a[0])
+    h = math.sin(dlat / 2) ** 2 + math.cos(la1) * math.cos(la2) * math.sin(dlon / 2) ** 2
+    return 2 * R * math.asin(min(1.0, math.sqrt(h)))
+
+
+def despike_indices(fixes):
+    """Indices of `fixes` to keep after removing isolated out-and-back spike points.
+
+    A point p[i] is a spike when it is far from BOTH neighbours AND the two hops out+back are
+    much longer than the direct neighbour-to-neighbour hop (so it juts out and comes straight
+    back while the neighbours stay close). Turn-safe: a genuine turn point is close to at least
+    one neighbour, or the neighbours are far apart, so the ratio test fails. Horizontal distance
+    only (altitude ignored). First and last are always kept. One pass, comparing against the last
+    kept point so a spike is not measured against another spike. `fixes` are Flight fixes."""
+    n = len(fixes)
+    if n < 3:
+        return list(range(n))
+    keep = [0]
+    for i in range(1, n - 1):
+        prev = fixes[keep[-1]]
+        p, nxt = fixes[i], fixes[i + 1]
+        a = (prev.lon, prev.lat); b = (p.lon, p.lat); c = (nxt.lon, nxt.lat)
+        d0 = _haversine_m(a, b); d1 = _haversine_m(b, c); dd = _haversine_m(a, c)
+        if d0 > SPIKE_MIN_M and d1 > SPIKE_MIN_M and (d0 + d1) > SPIKE_RATIO * dd:
+            continue  # isolated out-and-back spike: drop it
+        keep.append(i)
+    keep.append(n - 1)
+    return keep
+
+
+def short_callsign(label):
+    """Short callsign = the bit in square brackets in the label (e.g. "G-ELSB [SB]" -> "SB"),
+    falling back to the whole label/registration when there are no brackets."""
+    if not label:
+        return ""
+    m = re.search(r"\[([^\]]+)\]", label)
+    return m.group(1).strip() if m else label.strip()
+
+
 def _rdp_keep(pts, eps):
     """Ramer-Douglas-Peucker: indices to keep so the polyline stays within `eps` metres
     of the original. Drops redundant points on straight runs, preserves turns. Iterative."""
@@ -567,14 +616,18 @@ def collect(store, day, reg_spec, gliders, simplify=0.0, by_aircraft=False, addr
             if until is not None and fl.start > until:
                 continue
             t0 = datetime.fromtimestamp(fl.start, tz=timezone.utc).strftime("%H:%M")
+            # Despike (display-layer): drop isolated out-and-back outlier fixes before the track is
+            # turned into samples/speeds, so the whole flight (trail, position, readout) is built
+            # from the cleaned points. Full look-ahead here, so a single pass is exact.
+            fixes = [fl.fixes[i] for i in despike_indices(fl.fixes)]
             # Height ABOVE THE AIRFIELD, not MSL: the replay has no terrain, so Cesium draws
             # the ground at the sea-level ellipsoid. Plotting MSL would float every aircraft
             # ~field-elevation too high. Subtract field elevation so ground level sits on the map.
             samples = [[datetime.fromtimestamp(f.ts, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
                         round(f.lon, 6), round(f.lat, 6),
                         round(max(0.0, (f.alt_ft - GRANSDEN.elevation_ft) * FT_TO_M), 1)]
-                       for f in fl.fixes]
-            spd = [round(v) for v in ground_speeds_kt(fl.fixes)]
+                       for f in fixes]
+            spd = [round(v) for v in ground_speeds_kt(fixes)]
             if simplify and len(samples) > 2:
                 clat = math.cos(math.radians(GRANSDEN.lat))
                 pts = [(s[1] * 111320.0 * clat, s[2] * 111320.0, s[3]) for s in samples]
@@ -582,7 +635,7 @@ def collect(store, day, reg_spec, gliders, simplify=0.0, by_aircraft=False, addr
                 samples = [samples[i] for i in keep]
                 spd = [spd[i] for i in keep]
             name = label if by_aircraft else f"{label} F{i} {t0}Z"
-            flights.append({"name": name, "color": col, "mk": mk,
+            flights.append({"name": name, "color": col, "mk": mk, "cs": short_callsign(label),
                             "ai": aidx, "samples": samples, "spd": spd})
             used += 1
         if used:
