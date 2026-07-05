@@ -281,6 +281,12 @@ const GRACE_MS=60000;    // remove an aircraft this long after its last event
 const MAX_TRAIL=600;     // bounded recent-points trail per aircraft
 const ORIENT_MIN_M=30;   // walk back through the trail until at least this far behind
 const ORIENT_STATIONARY_M=10; // below this displacement, keep the last-good heading (no spin)
+// Pitch: OGN altitude is noisy, so a single short baseline gives a wildly exaggerated
+// angle. Fit the flight-path angle over a LONG window of many points so the nose matches
+// the real track slope, then smooth and clamp. Tune these if it looks too lively/sluggish.
+const PITCH_WINDOW_S=45;  // seconds of track used for the least-squares climb-rate fit
+const PITCH_EMA=0.12;     // extra exponential smoothing on top of the fit (lower = smoother)
+const PITCH_MAX_DEG=45;   // safety clamp (real steep climbs/descents still show)
 const ac={};             // address -> {plane, trail, color, name, model, pts[], lastSeen, _ori}
 let trailsOn=true;       // toggled by the "Trail" checkbox in the legend
 
@@ -339,16 +345,45 @@ function updateOrientation(e){
     if(Cesium.Cartesian3.distance(cur,c)>=ORIENT_MIN_M) break;
   }
   if(!lookback) return;
-  const vel=Cesium.Cartesian3.subtract(cur,lookback,new Cesium.Cartesian3());
-  if(Cesium.Cartesian3.magnitude(vel)<ORIENT_STATIONARY_M) return; // keep last-good
-  // Orient the model straight along the track velocity: heading and pitch both simply
-  // match the direction of travel (the simple, stable behaviour).
+  const vel0=Cesium.Cartesian3.subtract(cur,lookback,new Cesium.Cartesian3());
+  if(Cesium.Cartesian3.magnitude(vel0)<ORIENT_STATIONARY_M) return; // keep last-good
+  // HEADING direction: horizontal part of the short lookback velocity (responsive).
+  const upv=Cesium.Ellipsoid.WGS84.geodeticSurfaceNormal(cur,new Cesium.Cartesian3());
+  const horiz=Cesium.Cartesian3.subtract(vel0,
+    Cesium.Cartesian3.multiplyByScalar(upv,Cesium.Cartesian3.dot(vel0,upv),new Cesium.Cartesian3()),
+    new Cesium.Cartesian3());
+  if(Cesium.Cartesian3.magnitude(horiz)<1e-6) return;
+  const hdir=Cesium.Cartesian3.normalize(horiz,new Cesium.Cartesian3());
+  // PITCH: least-squares slope of height vs time over a LONG window (many points) = a
+  // noise-robust vertical speed; horizontal speed from the ground-track path length. The
+  // flight-path angle atan2(vspeed,hspeed) then matches the real track slope, not noise.
+  let rawPitch=0;
+  if(curTs!=null){
+    let s=n-1;
+    for(let i=n-2;i>=0;i--){ s=i; if(e.pts[i][3]!=null && curTs-e.pts[i][3]>=PITCH_WINDOW_S) break; }
+    const win=e.pts.slice(s);
+    if(win.length>=4 && win[0][3]!=null){
+      let sx=0,sy=0,sxx=0,sxy=0,path=0,prev=null; const k=win.length,t0=win[0][3];
+      for(const p of win){
+        const x=p[3]-t0,y=p[2]; sx+=x; sy+=y; sxx+=x*x; sxy+=x*y;
+        const fp=Cesium.Cartesian3.fromDegrees(p[0],p[1],0);
+        if(prev) path+=Cesium.Cartesian3.distance(prev,fp); prev=fp;
+      }
+      const den=k*sxx-sx*sx, dt=curTs-t0, hs=dt>0?path/dt:0;
+      if(den>1e-6 && hs>0.5) rawPitch=Math.atan2((k*sxy-sx*sy)/den, hs);
+    }
+  }
+  e._pitch=(e._pitch==null||isNaN(e._pitch))?rawPitch:e._pitch*(1-PITCH_EMA)+rawPitch*PITCH_EMA;
+  const maxP=Cesium.Math.toRadians(PITCH_MAX_DEG);
+  const pitch=Math.max(-maxP,Math.min(maxP,e._pitch));
+  // velocity = heading direction tilted by the smoothed pitch, wings level.
+  const vel=Cesium.Cartesian3.add(
+    Cesium.Cartesian3.multiplyByScalar(hdir,Math.cos(pitch),new Cesium.Cartesian3()),
+    Cesium.Cartesian3.multiplyByScalar(upv,Math.sin(pitch),new Cesium.Cartesian3()),
+    new Cesium.Cartesian3());
   const m=Cesium.Transforms.rotationMatrixFromPositionVelocity(cur,vel,Cesium.Ellipsoid.WGS84);
   const q=Cesium.Quaternion.fromRotationMatrix(m);
-  // Guard: a near-vertical velocity makes the matrix degenerate, so fromRotationMatrix can
-  // return a non-unit or NaN quaternion. Cesium builds the model matrix via
-  // Matrix3.fromQuaternion WITHOUT normalising, so a non-unit quaternion SCALES the model
-  // (it balloons in size). Normalise, and keep the last-good heading if anything is not finite.
+  // Normalise (a non-unit quaternion would scale/balloon the model); keep last-good if not finite.
   if(isFinite(q.x)&&isFinite(q.y)&&isFinite(q.z)&&isFinite(q.w)){
     e._ori=Cesium.Quaternion.normalize(q,new Cesium.Quaternion());
   }
