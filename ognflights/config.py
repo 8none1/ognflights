@@ -32,6 +32,10 @@ LAUNCH_MAX_AGL_FT = 200         # "low" = within this height above the field ele
 FOLLOW_IDLE_TIMEOUT_S = 600
 # Buffer this many seconds of an aircraft's pre-ownership fixes so we keep the launch roll.
 LAUNCH_BUFFER_S = 60
+# Reject spatially-impossible position fixes at capture: a fix implying a ground speed above
+# this (from the last accepted position) is a garbage ADS-B/OGN report (they arrive in good
+# time order, so the dedup/ts guard can't catch them). Nothing we track goes near this.
+GLITCH_MAX_SPEED_KT = 250
 
 # Restart recovery: on `watch` startup, re-acquire aircraft that were still airborne
 # and recently heard, so a container restart no longer loses a flight in progress.

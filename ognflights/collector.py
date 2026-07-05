@@ -132,6 +132,11 @@ def watch(ddb: DDB, max_seconds: int | None = None, commit_every: int = 100,
     # it cannot grow unbounded. The DB UNIQUE(address, ts) index + INSERT OR IGNORE
     # remains the correctness backstop for the narrow restart/out-of-order case.
     max_ts: dict[str, int] = {}
+    # Last accepted position per aircraft (ts, lat, lon), to reject spatially-impossible
+    # position jumps: garbage fixes that arrive in good time order but teleport the aircraft
+    # (so the dedup/ts guard cannot see them). Same lifecycle as max_ts.
+    last_pos: dict[str, tuple] = {}
+    glitch_max_ms = config.GLITCH_MAX_SPEED_KT * 0.514444  # kt -> m/s
 
     def store_fix(b, dev) -> bool:
         """Store a fix, using the in-memory max-ts pre-filter as the fast path.
@@ -145,10 +150,16 @@ def watch(ddb: DDB, max_seconds: int | None = None, commit_every: int = 100,
         prev = max_ts.get(b.address)
         if prev is not None and ts <= prev:
             return False                       # duplicate/out-of-order: skip SQLite entirely
+        lp = last_pos.get(b.address)           # reject spatially-impossible jumps (garbage fixes)
+        if lp is not None:
+            dt = ts - lp[0]
+            if dt > 0 and _haversine_m(lp[1], lp[2], b.lat, b.lon) / dt > glitch_max_ms:
+                return False                   # implausible speed: drop, stay anchored to last good
         stored = store.add_fix(b)              # unique index is the backstop
         store.upsert_device(b, dev)
         if stored:
             max_ts[b.address] = ts
+            last_pos[b.address] = (ts, b.lat, b.lon)
         return stored
 
     def build_filter() -> str:
@@ -253,6 +264,7 @@ def watch(ddb: DDB, max_seconds: int | None = None, commit_every: int = 100,
                     owned.difference_update(gone)
                     for h in gone:
                         max_ts.pop(h, None)     # stop tracking ts once we drop the aircraft
+                        last_pos.pop(h, None)   # and its last-good position
                         sources.pop(h, None)    # and forget its source callsigns
                     client.set_filter(build_filter())
                     logger.info("landed/lost %d, following %d", len(gone), len(owned))
