@@ -256,7 +256,7 @@ font:12px sans-serif;padding:8px 10px;border-radius:6px;max-height:90vh;overflow
 .sw{display:inline-block;width:12px;height:12px;margin-right:6px;border-radius:2px;vertical-align:middle}
 .hint{opacity:.6;font-size:11px}
 #legend label{cursor:pointer}</style>
-</head><body><div id="c"></div><div id="legend"><b>Live - Gransden</b><br><span class="hint">connecting...</span></div>
+</head><body><div id="c"></div><div id="legend"><div id="legdyn"><b>Live - Gransden</b><br><span class="hint">connecting...</span></div></div>
 <script>
 const MODELS=__MODELS__;      // {glider:"models/AS21.glb", dr400:"models/DR40.glb"}
 Cesium.Ion.defaultAccessToken="";
@@ -278,7 +278,7 @@ viewer.camera.setView({
 });
 
 const GRACE_MS=60000;    // remove an aircraft this long after its last event
-const MAX_TRAIL=600;     // bounded recent-points trail per aircraft
+let maxTrail=600;        // bounded recent-points trail per aircraft (tuned by the settings slider)
 const ORIENT_MIN_M=30;   // walk back through the trail until at least this far behind
 const ORIENT_STATIONARY_M=10; // below this displacement, keep the last-good heading (no spin)
 // Pitch: OGN altitude is noisy, so a single short baseline gives a wildly exaggerated
@@ -401,7 +401,7 @@ function trailPositions(pts){
 // append one [lon,lat,height_m,ts] point, keeping the trail bounded
 function pushPoint(e,pt){
   e.pts.push(pt);
-  if(e.pts.length>MAX_TRAIL) e.pts.splice(0,e.pts.length-MAX_TRAIL);
+  if(e.pts.length>maxTrail) e.pts.splice(0,e.pts.length-maxTrail);
   e._pos=Cesium.Cartesian3.fromDegrees(pt[0],pt[1],pt[2]);
   e._trail=trailPositions(e.pts);
   updateOrientation(e);
@@ -414,7 +414,7 @@ function snapshot(a){
   const pts=a.points||[];
   if(!pts.length) return;
   const e=ensure(a.address,a.name,a.color,a.model);
-  e.pts=pts.slice(-MAX_TRAIL);
+  e.pts=pts.slice(-maxTrail);
   e.maxTs=a.last_ts||0;   // so streamed duplicates already in this snapshot are dropped
   const last=e.pts[e.pts.length-1];
   e._pos=Cesium.Cartesian3.fromDegrees(last[0],last[1],last[2]);
@@ -448,16 +448,58 @@ function prune(){
   renderLegend();
 }
 
+// re-trim every aircraft's retained points to the current maxTrail and rebuild its
+// polyline, so a slider change is reflected immediately without waiting for new fixes.
+function applyTrailLength(){
+  for(const e of Object.values(ac)){
+    if(e.pts.length>maxTrail) e.pts.splice(0,e.pts.length-maxTrail);
+    e._trail=trailPositions(e.pts);
+  }
+  if(viewer.scene.requestRenderMode) viewer.scene.requestRender();
+}
+
+// day/night styling: mirror the replay's setNight. Night reveals the star skybox by
+// dropping the bright atmosphere + ground haze against a black background; day restores
+// the default blue atmosphere. The live page opens in night style (see viewer setup).
+function setNight(on){
+  viewer.scene.skyAtmosphere.show=!on;
+  viewer.scene.globe.showGroundAtmosphere=!on;
+  viewer.scene.backgroundColor=on?Cesium.Color.BLACK:Cesium.Color.CORNFLOWERBLUE;
+  if(viewer.scene.requestRenderMode) viewer.scene.requestRender();
+}
+
+// Build the collapsible settings panel ONCE and wire its listeners ONCE. This lives in a
+// static sibling element that renderLegend() never overwrites, so an open <details> stays
+// open and the slider stays usable (no reset mid-drag) while fixes stream in and only the
+// dynamic aircraft rows re-render. See renderLegend(), which touches only #legdyn.
+function buildSettings(){
+  const box=document.createElement("details");
+  box.id="settings"; box.style.marginTop="6px";
+  box.innerHTML=`<summary style="cursor:pointer;user-select:none;opacity:.8">settings</summary>`
+    +`<div style="margin:4px 0 2px 2px">`
+    +`<label style="display:block"><input type="checkbox" id="traillbl"${trailsOn?" checked":""}> Trail</label>`
+    +`<label style="display:block;margin-top:4px">trail length: <span id="tlen">${maxTrail}</span> pts<br>`
+    +`<input type="range" id="trailrange" min="20" max="1200" step="20" value="${maxTrail}" style="width:150px"></label>`
+    +`<label style="display:block;margin-top:4px"><input type="checkbox" id="nightlbl" checked> Night sky</label>`
+    +`</div>`;
+  document.getElementById("legend").appendChild(box);
+  document.getElementById("traillbl").addEventListener("change",e=>{ trailsOn=e.target.checked; applyTrails(); });
+  document.getElementById("trailrange").addEventListener("input",e=>{
+    maxTrail=+e.target.value;
+    document.getElementById("tlen").textContent=maxTrail;
+    applyTrailLength();
+  });
+  document.getElementById("nightlbl").addEventListener("change",e=>{ setNight(e.target.checked); });
+}
+
+// Only the dynamic parts re-render per fix: the airborne count + per-aircraft colour rows.
+// The settings panel is a separate static element (buildSettings) so it is never rebuilt here.
 function renderLegend(){
   const items=Object.values(ac);
   const rows=items.map(e=>`<div><span class="sw" style="background:${e.color}"></span>${e.name}</div>`);
   const n=items.length;
   const head=`<b>Live - Gransden</b><br><span class="hint">${n} aircraft airborne</span>`;
-  const ctrl=`<div style="margin:4px 0;user-select:none"><label>`
-    +`<input type="checkbox" id="traillbl"${trailsOn?" checked":""}> Trail</label></div>`;
-  document.getElementById("legend").innerHTML=head+ctrl+(rows.length?rows.join(""):"");
-  const cb=document.getElementById("traillbl");
-  if(cb) cb.addEventListener("change",e=>{ trailsOn=e.target.checked; applyTrails(); });
+  document.getElementById("legdyn").innerHTML=head+(rows.length?rows.join(""):"");
 }
 
 // 1) paint the current picture once, then 2) open the live event stream.
@@ -467,6 +509,7 @@ async function start(){
     const d=await r.json();
     (d.aircraft||[]).forEach(snapshot);
   }catch(e){ /* no snapshot; the stream will fill in */ }
+  buildSettings();   // static controls, built once so per-fix renders never disturb them
   renderLegend();
   const es=new EventSource("live.stream");
   es.onmessage=function(m){
