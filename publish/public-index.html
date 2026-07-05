@@ -139,7 +139,7 @@ function renderData(DATA){
         const corr=Cesium.Quaternion.fromAxisAngle(Cesium.Cartesian3.UNIT_Z, MYAW[mk]||0);
         return Cesium.Quaternion.multiply(base, corr, base);
       }, false),
-      model:{uri:DATA.models[mk].url, minimumPixelSize:64, maximumScale:20000, scale:1,
+      model:{uri:DATA.models[mk].url, minimumPixelSize:40, maximumScale:20000, scale:1,
         color:col, colorBlendMode:Cesium.ColorBlendMode.MIX, colorBlendAmount:0.5,
         silhouetteColor:col, silhouetteSize:1.5},
       path:{resolution:PATHRES, material:col, width:3, leadTime:0, trailTime:100000},
