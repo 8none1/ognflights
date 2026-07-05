@@ -23,7 +23,7 @@ const HOME={"lon": -0.10937, "lat": 52.09717, "height": 6000.0, "heading": 0.0, 
 const MYAW={"dr400": 0.0, "glider": 0.0};             // {modelKey: radians} yaw offset per model; tune with number keys + [ ]
 const TRAILMODE="active";
 const SPEEDCOL=false;
-const SINGLELINK="2026-07-04"; // day string to link each aircraft to its single-aircraft view, or null
+const SINGLELINK="2026-07-05"; // day string to link each aircraft to its single-aircraft view, or null
 const PATHRES=3.0;
 const MULT=60;
 Cesium.Ion.defaultAccessToken="";
@@ -41,97 +41,6 @@ const labelLayer=Cesium.ImageryLayer.fromProviderAsync(
     "https://services.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer"));
 viewer.imageryLayers.add(labelLayer);
 labelLayer.show=false;
-// --- orientation tuning (mirrors the live view in ognflights/webapp.py) ---
-// Heading comes from a short horizontal lookback (responsive). Pitch is computed
-// separately over a LONGER window so OGN altitude noise stops the model porpoising:
-// least-squares climb rate over the window, EMA-smoothed, then hard-clamped, and held
-// level on the ground or when moving too slowly to have a meaningful flight-path angle.
-const ORIENT_MIN_M=30;     // horizontal lookback distance for heading
-const PITCH_WINDOW_S=40;   // seconds of history for the least-squares climb-rate fit
-const PITCH_EMA=0.15;      // exponential smoothing weight on top of the fitted pitch
-const PITCH_MAX_DEG=15;    // clamp; OGN altitude is too noisy to trust steeper angles
-const PITCH_MIN_SPEED_MS=8;// below this ground speed (~15 kt) hold level: taxiing/slow
-const PITCH_GROUND_M=15;   // within this height above the field, hold level: on the ground
-
-// Pre-compute a calm, correct orientation quaternion PER SAMPLE for one flight, then
-// return a time-sampled property the model interpolates. Same maths as the live view:
-// heading from a ~ORIENT_MIN_M horizontal lookback among the samples; pitch from the
-// least-squares slope of height vs time over ~PITCH_WINDOW_S (vertical speed) with
-// horizontal speed from the ground-track PATH length over the window (turn-safe);
-// pitch=atan2(vspeed,hspeed), EMA-smoothed, clamped, level on the ground/slow. The
-// velocity is reconstructed (horizontal dir + up*H*tan(pitch)) and fed through
-// rotationMatrixFromPositionVelocity -> quaternion -> normalise, THEN the per-model
-// MYAW yaw correction is applied (multiply, exactly as before) so calibration is unchanged.
-function buildOrientation(samples, mk){
-  const n=samples.length;
-  const jd=samples.map(s=>Cesium.JulianDate.fromIso8601(s[0]));
-  const ts=jd.map(j=>Cesium.JulianDate.toDate(j).getTime()/1000);   // seconds
-  const posC=samples.map(s=>Cesium.Cartesian3.fromDegrees(s[1],s[2],s[3]));
-  const flatC=samples.map(s=>Cesium.Cartesian3.fromDegrees(s[1],s[2],0)); // horizontal only
-  const hgt=samples.map(s=>s[3]);   // height above the field (metres)
-  const corr=Cesium.Quaternion.fromAxisAngle(Cesium.Cartesian3.UNIT_Z, MYAW[mk]||0);
-  const maxP=Cesium.Math.toRadians(PITCH_MAX_DEG);
-  const ori=new Cesium.SampledProperty(Cesium.Quaternion);
-  ori.setInterpolationOptions({interpolationDegree:1,interpolationAlgorithm:Cesium.LinearApproximation});
-  let ema=0, lastQ=null;
-  for(let i=1;i<n;i++){
-    const cur=posC[i], curTs=ts[i];
-    // HEADING baseline: walk back until at least ORIENT_MIN_M behind (else oldest point).
-    let lookback=null;
-    for(let k=i-1;k>=0;k--){
-      lookback=posC[k];
-      if(Cesium.Cartesian3.distance(cur,lookback)>=ORIENT_MIN_M) break;
-    }
-    if(!lookback) continue;   // no lookback yet: leave this sample without a keyframe
-    let vel=Cesium.Cartesian3.subtract(cur,lookback,new Cesium.Cartesian3());
-    if(Cesium.Cartesian3.magnitude(vel)<1e-6) continue;   // no displacement: skip
-    // PITCH: least-squares slope of height vs time over the ~PITCH_WINDOW_S window,
-    // with horizontal speed from the ground-track path length (turn-safe).
-    let si=i;
-    for(let k=i-1;k>=0;k--){ si=k; if(curTs-ts[k]>=PITCH_WINDOW_S) break; }
-    let rawPitch=0;   // default level: ground, too slow, or not enough window yet
-    if(i-si>=2){
-      let sx=0,sy=0,sxx=0,sxy=0,path=0;
-      const kN=i-si+1, t0=ts[si];
-      for(let j=si;j<=i;j++){
-        const x=ts[j]-t0, y=hgt[j];
-        sx+=x; sy+=y; sxx+=x*x; sxy+=x*y;
-        if(j>si) path+=Cesium.Cartesian3.distance(flatC[j-1],flatC[j]);
-      }
-      const denom=kN*sxx-sx*sx, dt=curTs-t0;
-      const hspeed=dt>0?path/dt:0;
-      if(denom>1e-6 && hspeed>=PITCH_MIN_SPEED_MS && hgt[i]>PITCH_GROUND_M){
-        const vspeed=(kN*sxy-sx*sy)/denom;   // m/s, least-squares slope of height vs time
-        rawPitch=Math.atan2(vspeed,hspeed);
-      }
-    }
-    ema=ema*(1-PITCH_EMA)+rawPitch*PITCH_EMA;   // eases toward level on the ground
-    const pitch=Math.max(-maxP,Math.min(maxP,ema));
-    // Rebuild velocity so its horizontal direction (heading) is unchanged but its
-    // vertical component encodes exactly the clamped/smoothed pitch, wings level.
-    const up=Cesium.Ellipsoid.WGS84.geodeticSurfaceNormal(cur,new Cesium.Cartesian3());
-    const upComp=Cesium.Cartesian3.dot(vel,up);
-    const horiz=Cesium.Cartesian3.subtract(
-      vel,Cesium.Cartesian3.multiplyByScalar(up,upComp,new Cesium.Cartesian3()),
-      new Cesium.Cartesian3());
-    const H=Cesium.Cartesian3.magnitude(horiz);
-    if(H>1e-6){
-      const rise=Cesium.Cartesian3.multiplyByScalar(up,H*Math.tan(pitch),new Cesium.Cartesian3());
-      vel=Cesium.Cartesian3.add(horiz,rise,new Cesium.Cartesian3());
-    }
-    const m=Cesium.Transforms.rotationMatrixFromPositionVelocity(cur,vel,Cesium.Ellipsoid.WGS84);
-    let q=Cesium.Quaternion.fromRotationMatrix(m);
-    // Guard: near-vertical velocity can make the matrix degenerate (non-unit/NaN quaternion,
-    // which would SCALE the model). Normalise; skip the sample if anything is not finite.
-    if(!(isFinite(q.x)&&isFinite(q.y)&&isFinite(q.z)&&isFinite(q.w))) continue;
-    q=Cesium.Quaternion.normalize(q,new Cesium.Quaternion());
-    q=Cesium.Quaternion.multiply(q, corr, new Cesium.Quaternion());   // per-model MYAW, unchanged
-    ori.addSample(jd[i], q);
-    lastQ=q;
-  }
-  return lastQ?ori:null;   // null if we never had enough lookback to compute a keyframe
-}
-
 const SPD_LO=30, SPD_HI=110;   // knots mapped across the speed colour ramp
 function speedColor(kt){
   const t=Math.max(0,Math.min(1,(kt-SPD_LO)/(SPD_HI-SPD_LO)));
@@ -175,25 +84,18 @@ function renderData(DATA){
     if(!tmin||Cesium.JulianDate.lessThan(t0,tmin))tmin=t0;
     if(!tmax||Cesium.JulianDate.greaterThan(t1,tmax))tmax=t1;
     const col=Cesium.Color.fromCssColorString(fl.color);
+    const velProp=new Cesium.VelocityOrientationProperty(pos);
     const mk=fl.mk;
-    // Pre-computed, robust per-sample orientation (calm pitch, level on the ground).
-    // Fall back to the old velocity-derived orientation only if too few samples had a
-    // usable lookback to build any keyframe (e.g. a very short/stationary flight).
-    let orientation=buildOrientation(fl.samples, mk);
-    if(!orientation){
-      const velProp=new Cesium.VelocityOrientationProperty(pos);
-      orientation=new Cesium.CallbackProperty(function(time,result){
-        const base=velProp.getValue(time,result);
-        if(!base) return undefined;
-        const corr=Cesium.Quaternion.fromAxisAngle(Cesium.Cartesian3.UNIT_Z, MYAW[mk]||0);
-        return Cesium.Quaternion.multiply(base, corr, base);
-      }, false);
-    }
     planes.push(viewer.entities.add({
       name:fl.name,
       availability:new Cesium.TimeIntervalCollection([new Cesium.TimeInterval({start:t0,stop:t1})]),
       position:pos,
-      orientation:orientation,
+      orientation:new Cesium.CallbackProperty(function(time,result){
+        const base=velProp.getValue(time,result);
+        if(!base) return undefined;
+        const corr=Cesium.Quaternion.fromAxisAngle(Cesium.Cartesian3.UNIT_Z, MYAW[mk]||0);
+        return Cesium.Quaternion.multiply(base, corr, base);
+      }, false),
       model:{uri:DATA.models[mk].url, minimumPixelSize:64, maximumScale:20000, scale:1,
         color:col, colorBlendMode:Cesium.ColorBlendMode.MIX, colorBlendAmount:0.5,
         silhouetteColor:col, silhouetteSize:1.5},

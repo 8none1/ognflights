@@ -281,16 +281,6 @@ const GRACE_MS=60000;    // remove an aircraft this long after its last event
 const MAX_TRAIL=600;     // bounded recent-points trail per aircraft
 const ORIENT_MIN_M=30;   // walk back through the trail until at least this far behind
 const ORIENT_STATIONARY_M=10; // below this displacement, keep the last-good heading (no spin)
-// --- pitch tuning (decoupled from heading; eyeball these on the live site) ---
-// Heading comes from the short ORIENT_MIN_M lookback above (responsive). Pitch is
-// computed separately over a LONGER window so OGN altitude noise stops the model
-// porpoising: raw climb angle over the window, EMA-smoothed, then hard-clamped.
-const PITCH_WINDOW_S=40;   // seconds of history for the least-squares climb-rate fit
-const PITCH_WINDOW_M=200;  // fallback baseline (metres) when timestamps are missing
-const PITCH_EMA=0.15;      // exponential smoothing weight on top of the fitted pitch
-const PITCH_MAX_DEG=15;    // clamp; OGN altitude is too noisy to trust steeper angles
-const PITCH_MIN_SPEED_MS=8;// below this ground speed (~15 kt) hold level: taxiing/slow
-const PITCH_GROUND_M=15;   // within this height above the field, hold level: on the ground
 const ac={};             // address -> {plane, trail, color, name, model, pts[], lastSeen, _ori}
 let trailsOn=true;       // toggled by the "Trail" checkbox in the legend
 
@@ -349,62 +339,10 @@ function updateOrientation(e){
     if(Cesium.Cartesian3.distance(cur,c)>=ORIENT_MIN_M) break;
   }
   if(!lookback) return;
-  let vel=Cesium.Cartesian3.subtract(cur,lookback,new Cesium.Cartesian3());
+  const vel=Cesium.Cartesian3.subtract(cur,lookback,new Cesium.Cartesian3());
   if(Cesium.Cartesian3.magnitude(vel)<ORIENT_STATIONARY_M) return; // keep last-good
-
-  // PITCH: OGN altitude is very noisy (tens of metres of jitter), so a two-point
-  // difference gives a wild angle, and at low speed a tiny height change is a huge angle.
-  // Fit a least-squares slope of height vs time over a long window for a noise-robust
-  // vertical speed, take horizontal speed from the actual ground-track path length
-  // (turn-safe), and pitch = atan2(vspeed, hspeed). Hold the model LEVEL on the ground or
-  // when moving too slowly to have a meaningful flight-path angle (taxiing).
-  let si=n-1;
-  for(let i=n-2;i>=0;i--){
-    si=i;
-    if(curTs!=null && e.pts[i][3]!=null){
-      if(curTs-e.pts[i][3]>=PITCH_WINDOW_S) break;
-    }else{
-      const c=Cesium.Cartesian3.fromDegrees(e.pts[i][0],e.pts[i][1],0);
-      const fc=Cesium.Cartesian3.fromDegrees(last[0],last[1],0);
-      if(Cesium.Cartesian3.distance(fc,c)>=PITCH_WINDOW_M) break;
-    }
-  }
-  let rawPitch=0;   // default level: ground, too slow, or not enough window yet
-  const win=e.pts.slice(si);
-  if(win.length>=3 && win[0][3]!=null && curTs!=null){
-    let sx=0,sy=0,sxx=0,sxy=0,path=0,prev=null;
-    const k=win.length, t0=win[0][3];
-    for(const p of win){
-      const x=p[3]-t0, y=p[2];
-      sx+=x; sy+=y; sxx+=x*x; sxy+=x*y;
-      const fp=Cesium.Cartesian3.fromDegrees(p[0],p[1],0);
-      if(prev) path+=Cesium.Cartesian3.distance(prev,fp);
-      prev=fp;
-    }
-    const denom=k*sxx-sx*sx, dt=curTs-t0;
-    const hspeed=dt>0?path/dt:0;          // m/s ground speed along the track (turn-safe)
-    if(denom>1e-6 && hspeed>=PITCH_MIN_SPEED_MS && last[2]>PITCH_GROUND_M){
-      const vspeed=(k*sxy-sx*sy)/denom;   // m/s, least-squares slope of height vs time
-      rawPitch=Math.atan2(vspeed,hspeed);
-    }
-  }
-  e._pitch=e._pitch*(1-PITCH_EMA)+rawPitch*PITCH_EMA;  // eases toward level on the ground
-  // clamp the smoothed pitch, then REBUILD the velocity so its horizontal direction
-  // (and thus heading) is unchanged but its vertical component encodes exactly _pitch.
-  const maxP=Cesium.Math.toRadians(PITCH_MAX_DEG);
-  const pitch=Math.max(-maxP,Math.min(maxP,e._pitch));
-  const up=Cesium.Ellipsoid.WGS84.geodeticSurfaceNormal(cur,new Cesium.Cartesian3());
-  const upComp=Cesium.Cartesian3.dot(vel,up);
-  // horizontal part = vel minus its up-component; keeps the along-track direction.
-  const horiz=Cesium.Cartesian3.subtract(
-    vel,Cesium.Cartesian3.multiplyByScalar(up,upComp,new Cesium.Cartesian3()),
-    new Cesium.Cartesian3());
-  const H=Cesium.Cartesian3.magnitude(horiz);
-  if(H>1e-6){
-    // newVel = horiz + up*(H*tan(pitch)); its pitch = atan2(H*tan p, H) = p exactly.
-    const rise=Cesium.Cartesian3.multiplyByScalar(up,H*Math.tan(pitch),new Cesium.Cartesian3());
-    vel=Cesium.Cartesian3.add(horiz,rise,new Cesium.Cartesian3());
-  }
+  // Orient the model straight along the track velocity: heading and pitch both simply
+  // match the direction of travel (the simple, stable behaviour).
   const m=Cesium.Transforms.rotationMatrixFromPositionVelocity(cur,vel,Cesium.Ellipsoid.WGS84);
   const q=Cesium.Quaternion.fromRotationMatrix(m);
   // Guard: a near-vertical velocity makes the matrix degenerate, so fromRotationMatrix can
