@@ -80,6 +80,8 @@ const TRAILMODE="__TRAILMODE__";
 const SPEEDCOL=__SPEEDCOL__;
 const SINGLELINK=__SINGLELINK__; // day string to link each aircraft to its single-aircraft view, or null
 const PATHRES=__PATHRES__;
+const TAILSECS=__TAILSECS__;  // sliding "tail" trail: seconds of track kept behind the aircraft
+let tailSecs=TAILSECS;        // live-adjustable via the settings slider
 const MULT=__MULT__;
 Cesium.Ion.defaultAccessToken="";
 const viewer=new Cesium.Viewer("c",{
@@ -176,14 +178,23 @@ function renderData(DATA){
     `<div style="margin:4px 0;user-select:none">trails:
       <label><input type="radio" name="tm" value="full"> full</label>
       <label><input type="radio" name="tm" value="active"> active</label>
+      <label><input type="radio" name="tm" value="tail"> tail</label>
       <label><input type="radio" name="tm" value="off"> off</label>
       <label style="cursor:pointer;margin-left:8px"><input type="checkbox" id="speedcol"> by speed</label>
       <div id="speedscale" style="display:none;margin:3px 0">
         <span style="display:inline-block;width:130px;height:9px;border-radius:2px;background:linear-gradient(90deg,#1f1f80,#00cc80,#ffff80)"></span>
         <br><span class="hint">slow ${SPD_LO} &rarr; ${SPD_HI} kt fast</span></div>
-      <br><label style="cursor:pointer"><input type="checkbox" id="nightsky" checked> night sky</label>
-      <label style="cursor:pointer;margin-left:8px"><input type="checkbox" id="placenames"> place names</label>
-      <br><button id="resetview" style="cursor:pointer;margin-top:4px">reset view</button></div>`];
+      <br><label style="cursor:pointer"><input type="checkbox" id="placenames"> place names</label>
+      <br><button id="resetview" style="cursor:pointer;margin-top:4px">reset view</button>
+      <details id="settings" style="margin-top:6px">
+        <summary style="cursor:pointer;user-select:none;opacity:.8">settings</summary>
+        <div style="margin:4px 0 2px 2px">
+          <label style="cursor:pointer;display:block"><input type="checkbox" id="nightsky" checked> night sky</label>
+          <label style="display:block;margin-top:4px">tail length: <span id="tailval">${TAILSECS}</span>s<br>
+            <input type="range" id="tailrange" min="10" max="300" step="5" value="${TAILSECS}" style="width:150px;vertical-align:middle">
+          </label>
+        </div>
+      </details></div>`];
   if(DATA.legend.length>1) leg.push(`<div class="hint" style="margin-top:4px">show: <a href="#" id="acAll" style="color:#8cf">all</a> / <a href="#" id="acNone" style="color:#8cf">none</a></div>`);
   DATA.legend.forEach((a,i)=>leg.push(`<div style="display:block"><label style="cursor:pointer"><input type="checkbox" class="acft" data-ai="${i}" checked> <span class="sw" style="background:${a.color}"></span>${a.label} (${a.n})</label>${SINGLELINK&&a.key?` <a href="#" class="single" data-key="${encodeURIComponent(a.key)}" style="color:#8cf;font-size:11px">single &rarr;</a>`:""}</div>`));
   leg.push(`<div id="models" class="hint" style="margin-top:6px"></div>`);
@@ -201,6 +212,13 @@ function renderData(DATA){
   if(document.getElementById("acAll")) document.getElementById("acAll").addEventListener("click",e=>{e.preventDefault();setAllAircraft(true);});
   if(document.getElementById("acNone")) document.getElementById("acNone").addEventListener("click",e=>{e.preventDefault();setAllAircraft(false);});
   document.querySelectorAll('input[name=tm]').forEach(r=>r.addEventListener("change",applyTrails));
+  // settings: live tail-length slider (switches to the "tail" mode so the change is visible)
+  const tailRange=document.getElementById("tailrange");
+  if(tailRange) tailRange.addEventListener("input",e=>{
+    tailSecs=+e.target.value; document.getElementById("tailval").textContent=tailSecs;
+    document.querySelector('input[name=tm][value="tail"]').checked=true;
+    applyTrails();
+  });
   document.getElementById("speedcol").addEventListener("change",function(){
     if(this.checked) document.querySelector('input[name=tm][value="full"]').checked=true;  // speed colours the full track
     applyTrails();
@@ -232,7 +250,9 @@ function renderData(DATA){
 function applyTrails(){
   const m=document.querySelector('input[name=tm]:checked').value;
   const speed=document.getElementById("speedcol").checked;
-  planes.forEach((p,i)=>{const on=aircraftOn[flightAi[i]]; p.show=on; p.path.show=on && m!=="off";});
+  // "tail" = short sliding window behind the aircraft; "active"/"full" = whole flown tail.
+  planes.forEach((p,i)=>{const on=aircraftOn[flightAi[i]]; p.show=on; p.path.show=on && m!=="off";
+    p.path.trailTime=(m==="tail")?tailSecs:100000;});
   trails.forEach((t,i)=>{t.show=aircraftOn[flightAi[i]] && m==="full" && !speed;});
   Object.keys(speedPrims).forEach(ai=>{speedPrims[ai].show=aircraftOn[+ai] && m==="full" && speed;});
   document.getElementById("speedscale").style.display=(m==="full"&&speed)?"block":"none";
@@ -428,7 +448,8 @@ def _rdp_keep(pts, eps):
     return [i for i in range(n) if keep[i]]
 
 
-def collect(store, day, reg_spec, gliders, simplify=0.0, by_aircraft=False, address=None):
+def collect(store, day, reg_spec, gliders, simplify=0.0, by_aircraft=False, address=None,
+            since=None, until=None):
     lo, hi = store.day_bounds(day)
     flights, legend, ai = [], [], 0
     want_reg, want_idx = None, None
@@ -464,6 +485,11 @@ def collect(store, day, reg_spec, gliders, simplify=0.0, by_aircraft=False, addr
         used = 0
         for i, fl in enumerate(fls, 1):
             if want_idx and i not in want_idx:
+                continue
+            # time-window filter: keep flights that overlap [since, until] (unix ts, UTC)
+            if since is not None and fl.end < since:
+                continue
+            if until is not None and fl.start > until:
                 continue
             t0 = datetime.fromtimestamp(fl.start, tz=timezone.utc).strftime("%H:%M")
             # Height ABOVE THE AIRFIELD, not MSL: the replay has no terrain, so Cesium draws
@@ -523,7 +549,7 @@ def build_payload(flights, legend, title, models_url="models"):
 
 
 def render_html(*, title, payload, home, myaw, trail, speed_colour, single_link,
-                path_resolution, mult, external=False, data_base="", daypicker=False):
+                path_resolution, mult, tail_seconds=60, external=False, data_base="", daypicker=False):
     """Fill the Cesium template into a complete HTML page.
 
     `payload` is the inline DATA dict for inline mode, or None in external-data
@@ -543,6 +569,7 @@ def render_html(*, title, payload, home, myaw, trail, speed_colour, single_link,
             .replace("__SPEEDCOL__", "true" if speed_colour else "false")
             .replace("__SINGLELINK__", json.dumps(single_link))
             .replace("__PATHRES__", repr(path_resolution))
+            .replace("__TAILSECS__", str(tail_seconds))
             .replace("__MULT__", str(mult)))
 
 
@@ -567,8 +594,10 @@ def main():
     p.add_argument("--path-resolution", type=float, default=1.0,
                    help="seconds between comet-tail (path) samples; higher = cheaper per frame "
                         "(the dashboard raises this with aircraft count). 1 = smooth, for single-aircraft replays.")
-    p.add_argument("--trail", choices=["active", "full", "off"], default="active",
+    p.add_argument("--trail", choices=["active", "full", "tail", "off"], default="active",
                    help="initial trail mode")
+    p.add_argument("--tail-seconds", type=int, default=60,
+                   help='length (seconds of track) of the "tail" sliding trail mode')
     p.add_argument("--speed-colour", action="store_true",
                    help="start with the full trail coloured by ground speed")
     p.add_argument("--home", help='lon,lat,height,heading,pitch (degrees/metres)')
@@ -577,6 +606,8 @@ def main():
                    help="URL/path (relative to the HTML) where the .glb models are served")
     p.add_argument("--db", default=os.environ.get("OGNFLIGHTS_DB"),
                    help="explicit DB file (default: the year-partitioned file for --day)")
+    p.add_argument("--since", help='only flights overlapping from this UTC time, "HH:MM" or "HH:MM:SS"')
+    p.add_argument("--until", help='only flights overlapping up to this UTC time, "HH:MM" or "HH:MM:SS"')
     p.add_argument("--external-data", action="store_true",
                    help="the page fetches its DATA at runtime instead of inlining it "
                         "(the private /replay keeps the default inline path)")
@@ -592,6 +623,15 @@ def main():
     a = p.parse_args()
 
     day = datetime.strptime(a.day, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+
+    def _tod(s):
+        if not s:
+            return None
+        fmt = "%H:%M:%S" if s.count(":") == 2 else "%H:%M"
+        t = datetime.strptime(s, fmt).replace(tzinfo=timezone.utc)
+        return int(day.replace(hour=t.hour, minute=t.minute, second=t.second).timestamp())
+    since = _tod(a.since)
+    until = _tod(a.until)
 
     # --public turns on external-data + day picker + the raw.githubusercontent base.
     external = a.external_data or a.public
@@ -621,7 +661,8 @@ def main():
     else:
         store = Store(a.db) if a.db else store_for_day(day)
         flights, legend = collect(store, day, a.reg, a.gliders, simplify=a.simplify,
-                                  by_aircraft=a.by_aircraft, address=a.address)
+                                  by_aircraft=a.by_aircraft, address=a.address,
+                                  since=since, until=until)
         if not flights:
             raise SystemExit("no flights matched")
         used_keys = sorted({fl["mk"] for fl in flights})
@@ -631,7 +672,7 @@ def main():
 
     html = render_html(title=a.title, payload=payload, home=home, myaw=myaw,
                        trail=a.trail, speed_colour=a.speed_colour, single_link=single_link,
-                       path_resolution=a.path_resolution, mult=a.mult,
+                       path_resolution=a.path_resolution, mult=a.mult, tail_seconds=a.tail_seconds,
                        external=external, data_base=data_base, daypicker=daypicker)
     with open(a.out, "w") as f:
         f.write(html)
