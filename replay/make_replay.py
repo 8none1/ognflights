@@ -83,6 +83,10 @@ const PATHRES=__PATHRES__;
 const TAILSECS=__TAILSECS__;  // sliding "tail" trail: seconds of track kept behind the aircraft
 let tailSecs=TAILSECS;        // live-adjustable via the settings slider
 const MULT=__MULT__;
+const FIELD_ELEV_FT=__FIELDELEV__;  // airfield elevation (ft AMSL); sample heights are AGL metres
+const M_TO_FT=1/0.3048, MS_TO_KT=1/0.514444;  // metres->feet, vertical m/s -> knots
+const VARIO_WIN_S=18;               // vario smoothing window (s): least-squares slope of alt vs time
+let readoutsOn=true;                // settings toggle: show/hide the per-aircraft readout labels
 Cesium.Ion.defaultAccessToken="";
 const viewer=new Cesium.Viewer("c",{
   baseLayer:Cesium.ImageryLayer.fromProviderAsync(Cesium.ArcGisMapServerImageryProvider.fromUrl(
@@ -104,6 +108,42 @@ function speedColor(kt){
   const st=[[0.12,0.12,0.5],[0.0,0.8,0.5],[1.0,1.0,0.5]];  // dim blue -> green -> bright yellow
   const seg=t*2, i=Math.min(1,Math.floor(seg)), f=seg-i, a=st[i], b=st[i+1]||st[i];
   return new Cesium.Color(a[0]+(b[0]-a[0])*f, a[1]+(b[1]-a[1])*f, a[2]+(b[2]-a[2])*f, 0.95);
+}
+
+// Precompute, once per flight, two Cesium.SampledProperty(Number): altitude in feet AMSL and
+// a smoothed rate of climb in knots. Both are keyed on the same JulianDates as the position
+// samples, so the label just reads them at the clock time (linear interpolation, cheap).
+// The vario is a least-squares slope of altitude(m) vs time over a trailing ~VARIO_WIN_S window,
+// which tames the very noisy raw OGN GPS altitude (same noise that killed instantaneous pitch).
+function buildReadout(samples){
+  const n=samples.length;
+  const times=new Array(n), secs=new Array(n), altM=new Array(n);
+  for(let i=0;i<n;i++){
+    times[i]=Cesium.JulianDate.fromIso8601(samples[i][0]);
+    secs[i]=Cesium.JulianDate.secondsDifference(times[i],times[0]);  // seconds from first sample
+    altM[i]=samples[i][3];   // height above field, metres
+  }
+  const altFt=new Cesium.SampledProperty(Number);
+  const varioKt=new Cesium.SampledProperty(Number);
+  altFt.setInterpolationOptions({interpolationDegree:1,interpolationAlgorithm:Cesium.LinearApproximation});
+  varioKt.setInterpolationOptions({interpolationDegree:1,interpolationAlgorithm:Cesium.LinearApproximation});
+  let j=0;  // trailing window start index; advances monotonically
+  for(let i=0;i<n;i++){
+    altFt.addSample(times[i], altM[i]*M_TO_FT + FIELD_ELEV_FT);
+    while(secs[i]-secs[j] > VARIO_WIN_S) j++;
+    // least-squares slope of altM vs secs over [j..i]
+    let cnt=0,sx=0,sy=0,sxx=0,sxy=0;
+    for(let k=j;k<=i;k++){const x=secs[k],y=altM[k]; cnt++; sx+=x; sy+=y; sxx+=x*x; sxy+=x*y;}
+    const denom=cnt*sxx - sx*sx;
+    const slope=(cnt>=2 && Math.abs(denom)>1e-9)?(cnt*sxy - sx*sy)/denom:0;  // m/s
+    varioKt.addSample(times[i], slope*MS_TO_KT);
+  }
+  return {altFt, varioKt};
+}
+function fmtReadout(ft, kt){
+  const ftStr=Math.round(ft).toLocaleString("en-GB");
+  const sign=kt>=0?"+":"-";
+  return ftStr+" ft\n"+sign+Math.abs(kt).toFixed(1)+" kt";
 }
 
 // --- per-day render state: everything built from a DATA dict, torn down on day change ---
@@ -143,7 +183,9 @@ function renderData(DATA){
     const col=Cesium.Color.fromCssColorString(fl.color);
     const velProp=new Cesium.VelocityOrientationProperty(pos);
     const mk=fl.mk;
-    planes.push(viewer.entities.add({
+    // altitude + vario readout properties (precomputed once, read per frame by the label callback)
+    const ro=buildReadout(fl.samples);
+    const plane=viewer.entities.add({
       name:fl.name,
       availability:new Cesium.TimeIntervalCollection([new Cesium.TimeInterval({start:t0,stop:t1})]),
       position:pos,
@@ -156,8 +198,32 @@ function renderData(DATA){
       model:{uri:DATA.models[mk].url, minimumPixelSize:64, maximumScale:20000, scale:1,
         color:col, colorBlendMode:Cesium.ColorBlendMode.MIX, colorBlendAmount:0.5,
         silhouetteColor:col, silhouetteSize:1.5},
-      path:{resolution:PATHRES, material:col, width:3, leadTime:0, trailTime:100000}
-    }));
+      path:{resolution:PATHRES, material:col, width:3, leadTime:0, trailTime:100000},
+      // floating altitude + rate-of-climb readout, hovering above the model. The callback only
+      // reads two precomputed SampledProperties, so it is cheap even with many gliders; far-away
+      // gliders drop out via distanceDisplayCondition to keep the scene uncluttered and light.
+      label:{
+        text:new Cesium.CallbackProperty(function(time){
+          const ft=ro.altFt.getValue(time), kt=ro.varioKt.getValue(time);
+          if(ft===undefined||kt===undefined) return "";
+          return fmtReadout(ft, kt);
+        }, false),
+        show:readoutsOn,
+        font:"12px sans-serif",
+        fillColor:Cesium.Color.WHITE,
+        showBackground:true,
+        backgroundColor:new Cesium.Color(0,0,0,0.6),
+        backgroundPadding:new Cesium.Cartesian2(6,4),
+        verticalOrigin:Cesium.VerticalOrigin.BOTTOM,
+        horizontalOrigin:Cesium.HorizontalOrigin.CENTER,
+        pixelOffset:new Cesium.Cartesian2(0,-28),
+        disableDepthTestDistance:Number.POSITIVE_INFINITY,
+        distanceDisplayCondition:new Cesium.DistanceDisplayCondition(0.0, 60000.0),
+        translucencyByDistance:new Cesium.NearFarScalar(15000,1.0,60000,0.25),
+        scaleByDistance:new Cesium.NearFarScalar(15000,1.0,60000,0.75)
+      }
+    });
+    planes.push(plane);
     const flat=fl.samples.flatMap(s=>[s[1],s[2],s[3]]);
     trails.push(viewer.entities.add({name:fl.name+" trail",
       polyline:{positions:Cesium.Cartesian3.fromDegreesArrayHeights(flat),
@@ -190,6 +256,7 @@ function renderData(DATA){
         <summary style="cursor:pointer;user-select:none;opacity:.8">settings</summary>
         <div style="margin:4px 0 2px 2px">
           <label style="cursor:pointer;display:block"><input type="checkbox" id="nightsky" checked> night sky</label>
+          <label style="cursor:pointer;display:block;margin-top:4px"><input type="checkbox" id="readouts" checked> altitude / climb readouts</label>
           <label style="display:block;margin-top:4px">tail length: <span id="tailval">${TAILSECS}</span>s<br>
             <input type="range" id="tailrange" min="10" max="300" step="5" value="${TAILSECS}" style="width:150px;vertical-align:middle">
           </label>
@@ -228,6 +295,14 @@ function renderData(DATA){
   applyTrails();
   document.getElementById("nightsky").addEventListener("change",e=>setNight(e.target.checked));
   setNight(true);
+  // readouts toggle: the load escape hatch. Flip label visibility on every aircraft and redraw.
+  const readoutsCb=document.getElementById("readouts");
+  readoutsCb.checked=readoutsOn;
+  readoutsCb.addEventListener("change",e=>{
+    readoutsOn=e.target.checked;
+    planes.forEach((p,i)=>{if(p.label) p.label.show=readoutsOn && aircraftOn[flightAi[i]];});
+    viewer.scene.requestRender();
+  });
   document.getElementById("placenames").addEventListener("change",e=>{labelLayer.show=e.target.checked; viewer.scene.requestRender();});
   document.getElementById("resetview").addEventListener("click",function(){goHome(); this.blur();});
   // single-aircraft click-through: stay on this page, just re-render one aircraft (query-param based)
@@ -252,7 +327,8 @@ function applyTrails(){
   const speed=document.getElementById("speedcol").checked;
   // "tail" = short sliding window behind the aircraft; "active"/"full" = whole flown tail.
   planes.forEach((p,i)=>{const on=aircraftOn[flightAi[i]]; p.show=on; p.path.show=on && m!=="off";
-    p.path.trailTime=(m==="tail")?tailSecs:100000;});
+    p.path.trailTime=(m==="tail")?tailSecs:100000;
+    if(p.label) p.label.show=readoutsOn;});   // entity.show already gates a hidden aircraft's label
   trails.forEach((t,i)=>{t.show=aircraftOn[flightAi[i]] && m==="full" && !speed;});
   Object.keys(speedPrims).forEach(ai=>{speedPrims[ai].show=aircraftOn[+ai] && m==="full" && speed;});
   document.getElementById("speedscale").style.display=(m==="full"&&speed)?"block":"none";
@@ -570,6 +646,7 @@ def render_html(*, title, payload, home, myaw, trail, speed_colour, single_link,
             .replace("__SINGLELINK__", json.dumps(single_link))
             .replace("__PATHRES__", repr(path_resolution))
             .replace("__TAILSECS__", str(tail_seconds))
+            .replace("__FIELDELEV__", repr(float(GRANSDEN.elevation_ft)))
             .replace("__MULT__", str(mult)))
 
 
