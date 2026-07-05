@@ -270,12 +270,24 @@ viewer.scene.globe.enableLighting=true;
 viewer.scene.skyAtmosphere.show=false;
 viewer.scene.globe.showGroundAtmosphere=false;
 viewer.scene.backgroundColor=Cesium.Color.BLACK;
+// transparent place-names / boundaries overlay (toggled off by default), mirroring the replay.
+// NB: imageryLayers.add() returns void, so keep the layer ref from fromProviderAsync.
+const labelLayer=Cesium.ImageryLayer.fromProviderAsync(
+  Cesium.ArcGisMapServerImageryProvider.fromUrl(
+    "https://services.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer"));
+viewer.imageryLayers.add(labelLayer);
+labelLayer.show=false;
 
 // opening camera over Gransden, oblique looking north
-viewer.camera.setView({
-  destination:Cesium.Cartesian3.fromDegrees(-0.111, 52.10, 9000),
-  orientation:{heading:Cesium.Math.toRadians(0),pitch:Cesium.Math.toRadians(-35),roll:0}
-});
+const HOME={lon:-0.111,lat:52.10,height:9000,heading:0,pitch:-35,roll:0};
+function goHome(){
+  viewer.camera.setView({
+    destination:Cesium.Cartesian3.fromDegrees(HOME.lon,HOME.lat,HOME.height),
+    orientation:{heading:Cesium.Math.toRadians(HOME.heading),
+                 pitch:Cesium.Math.toRadians(HOME.pitch),roll:Cesium.Math.toRadians(HOME.roll)}
+  });
+}
+goHome();
 
 const GRACE_MS=60000;    // remove an aircraft this long after its last event
 let maxTrail=600;        // bounded recent-points trail per aircraft (tuned by the settings slider)
@@ -286,8 +298,18 @@ const ORIENT_STATIONARY_M=10; // below this displacement, keep the last-good hea
 // the real track slope, then smooth and clamp. Tune these if it looks too lively/sluggish.
 const PITCH_WINDOW_S=30;  // seconds of track for the least-squares climb-rate fit (this IS the smoothing)
 const PITCH_MAX_DEG=45;   // safety clamp (real steep climbs/descents still show)
+const M_TO_FT=1/0.3048, MS_TO_KT=1/0.514444;  // metres->feet, vertical m/s -> knots
+const VARIO_WIN_S=18;     // vario smoothing window (s): least-squares slope of height vs time
 const ac={};             // address -> {plane, trail, color, name, model, pts[], lastSeen, _ori}
 let trailsOn=true;       // toggled by the "Trail" checkbox in the legend
+let readoutsOn=true;     // toggled by the "altitude / climb readouts" checkbox in the settings panel
+
+// same format as the replay's fmtReadout: height above the field in feet + signed climb rate in knots
+function fmtReadout(ft, kt){
+  const ftStr=Math.round(ft).toLocaleString("en-GB");
+  const sign=kt>=0?"+":"-";
+  return ftStr+" ft\n"+sign+Math.abs(kt).toFixed(1)+" kt";
+}
 
 // create-or-update an aircraft entity from a position (lon,lat,height_m)
 function ensure(addr,name,color,model){
@@ -306,7 +328,29 @@ function ensure(addr,name,color,model){
     orientation:new Cesium.CallbackProperty(()=>e._ori,false),
     model:{uri:MODELS[model]||MODELS.glider, minimumPixelSize:64, maximumScale:20000, scale:1,
       color:col, colorBlendMode:Cesium.ColorBlendMode.MIX, colorBlendAmount:0.5,
-      silhouetteColor:col, silhouetteSize:1.5}
+      silhouetteColor:col, silhouetteSize:1.5},
+    // floating altitude + rate-of-climb readout, hovering above the model. Both values are
+    // computed once per fix (see updateOrientation) and stored on e, so the callback only
+    // formats them; far-away gliders fade/drop via distanceDisplayCondition to declutter.
+    label:{
+      text:new Cesium.CallbackProperty(()=>{
+        if(e._alt==null||e._vario==null) return "";
+        return fmtReadout(e._alt, e._vario);
+      },false),
+      show:readoutsOn,
+      font:"12px sans-serif",
+      fillColor:Cesium.Color.WHITE,
+      showBackground:true,
+      backgroundColor:new Cesium.Color(0,0,0,0.6),
+      backgroundPadding:new Cesium.Cartesian2(6,4),
+      verticalOrigin:Cesium.VerticalOrigin.BOTTOM,
+      horizontalOrigin:Cesium.HorizontalOrigin.CENTER,
+      pixelOffset:new Cesium.Cartesian2(0,-28),
+      disableDepthTestDistance:Number.POSITIVE_INFINITY,
+      distanceDisplayCondition:new Cesium.DistanceDisplayCondition(0.0, 60000.0),
+      translucencyByDistance:new Cesium.NearFarScalar(15000,1.0,60000,0.25),
+      scaleByDistance:new Cesium.NearFarScalar(15000,1.0,60000,0.75)
+    }
   });
   e.trail=viewer.entities.add({
     name:name+" trail", show:trailsOn,
@@ -330,10 +374,27 @@ function applyTrails(){
 // parked/slow gliders do not spin randomly.
 function updateOrientation(e){
   const n=e.pts.length;
-  if(n<2) return;
+  if(n<1) return;
   const last=e.pts[n-1];
-  const cur=Cesium.Cartesian3.fromDegrees(last[0],last[1],last[2]);
   const curTs=last[3];
+  // Readout altitude: height above the field in feet (height_m is already above-field, see
+  // live_height_m). Vario: least-squares slope of height(m) vs time over a trailing VARIO_WIN_S
+  // window -> knots. This is the same slope-of-height maths the pitch fit below uses (which
+  // tames the noisy OGN GPS altitude), just over the shorter readout window; both are stored on
+  // e once per fix and read by the label callback, so nothing is recomputed per frame.
+  e._alt=last[2]*M_TO_FT;
+  if(n>=2 && curTs!=null){
+    let vs=n-1;
+    for(let i=n-2;i>=0;i--){ vs=i; if(e.pts[i][3]!=null && curTs-e.pts[i][3]>=VARIO_WIN_S) break; }
+    const vwin=e.pts.slice(vs);
+    let cnt=0,sx=0,sy=0,sxx=0,sxy=0;
+    for(const p of vwin){ if(p[3]==null) continue; const x=p[3]-vwin[0][3],y=p[2]; cnt++; sx+=x; sy+=y; sxx+=x*x; sxy+=x*y; }
+    const den=cnt*sxx-sx*sx;
+    const slope=(cnt>=2 && Math.abs(den)>1e-9)?(cnt*sxy-sx*sy)/den:0;  // m/s
+    e._vario=slope*MS_TO_KT;
+  } else { e._vario=0; }
+  if(n<2) return;
+  const cur=Cesium.Cartesian3.fromDegrees(last[0],last[1],last[2]);
   // HEADING baseline: walk back until at least ORIENT_MIN_M behind (else oldest point).
   // This short, responsive lookback sets which way the nose points.
   let lookback=null;
@@ -480,7 +541,10 @@ function buildSettings(){
     +`<label style="display:block"><input type="checkbox" id="traillbl"${trailsOn?" checked":""}> Trail</label>`
     +`<label style="display:block;margin-top:4px">trail length: <span id="tlen">${maxTrail}</span> pts<br>`
     +`<input type="range" id="trailrange" min="20" max="1200" step="20" value="${maxTrail}" style="width:150px"></label>`
+    +`<label style="display:block;margin-top:4px"><input type="checkbox" id="readoutlbl" checked> altitude / climb readouts</label>`
     +`<label style="display:block;margin-top:4px"><input type="checkbox" id="nightlbl" checked> Night sky</label>`
+    +`<label style="display:block;margin-top:4px"><input type="checkbox" id="placelbl"> place names</label>`
+    +`<button id="resetview" style="cursor:pointer;margin-top:6px">reset view</button>`
     +`</div>`;
   document.getElementById("legend").appendChild(box);
   document.getElementById("traillbl").addEventListener("change",e=>{ trailsOn=e.target.checked; applyTrails(); });
@@ -489,7 +553,19 @@ function buildSettings(){
     document.getElementById("tlen").textContent=maxTrail;
     applyTrailLength();
   });
+  document.getElementById("readoutlbl").addEventListener("change",e=>{ readoutsOn=e.target.checked; applyReadouts(); });
   document.getElementById("nightlbl").addEventListener("change",e=>{ setNight(e.target.checked); });
+  document.getElementById("placelbl").addEventListener("change",e=>{
+    labelLayer.show=e.target.checked;
+    if(viewer.scene.requestRenderMode) viewer.scene.requestRender();
+  });
+  document.getElementById("resetview").addEventListener("click",function(){ goHome(); this.blur(); });
+}
+
+// show/hide every aircraft's floating altitude/climb readout without touching anything else
+function applyReadouts(){
+  for(const addr of Object.keys(ac)){ if(ac[addr].plane.label) ac[addr].plane.label.show=readoutsOn; }
+  if(viewer.scene.requestRenderMode) viewer.scene.requestRender();
 }
 
 // Only the dynamic parts re-render per fix: the airborne count + per-aircraft colour rows.
