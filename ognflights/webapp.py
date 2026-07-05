@@ -458,6 +458,103 @@ new Cesium.ScreenSpaceEventHandler(viewer.scene.canvas).setInputAction(function(
 </script></body></html>"""
 
 
+def _calibrate_page() -> str:
+    """One-off model-orientation calibration tool.
+
+    Renders a model oriented exactly as the app does (velocity orientation * a per-model
+    correction quaternion) next to a RED arrow along the direction of travel, so the nose
+    should point down the red arrow, wings level, upright. Nudge yaw/pitch/roll until it
+    lines up; the readout is the value to bake into the app for that model.
+    """
+    return """<!DOCTYPE html><html><head><meta charset="utf-8">
+<script src="https://cesium.com/downloads/cesiumjs/releases/1.143/Build/Cesium/Cesium.js"></script>
+<link href="https://cesium.com/downloads/cesiumjs/releases/1.143/Build/Cesium/Widgets/widgets.css" rel="stylesheet">
+<style>html,body,#c{width:100%;height:100%;margin:0;overflow:hidden}
+#hud{position:fixed;top:8px;left:8px;z-index:10;background:rgba(0,0,0,.8);color:#fff;
+font:13px/1.5 monospace;padding:10px 12px;border-radius:6px;white-space:pre}</style></head>
+<body><div id="c"></div><div id="hud"></div><script>
+Cesium.Ion.defaultAccessToken="";
+const v=new Cesium.Viewer("c",{baseLayerPicker:false,geocoder:false,timeline:false,animation:false,
+  homeButton:false,sceneModePicker:false,navigationHelpButton:false,fullscreenButton:false,infoBox:false,
+  selectionIndicator:false,baseLayer:new Cesium.ImageryLayer(new Cesium.GridImageryProvider())});
+v.scene.skyAtmosphere.show=false; v.scene.globe.showGroundAtmosphere=false;
+const MODELS={glider:"models/AS21.glb", dr400:"models/DR40.glb"};
+const lon=-0.109, lat=52.187, h=400;
+const pos=Cesium.Cartesian3.fromDegrees(lon,lat,h);
+const enu=Cesium.Transforms.eastNorthUpToFixedFrame(pos);
+const east=new Cesium.Cartesian3(enu[0],enu[1],enu[2]);
+const up=new Cesium.Cartesian3(enu[8],enu[9],enu[10]);
+// per-model correction (degrees), what we're tuning
+const corr={glider:{yaw:0,pitch:0,roll:0}, dr400:{yaw:0,pitch:0,roll:0}};
+let cur="glider", climb=false, plane=null;
+function velVec(){
+  const ang=climb?30:0;
+  const e=Cesium.Cartesian3.multiplyByScalar(east,Math.cos(Cesium.Math.toRadians(ang)),new Cesium.Cartesian3());
+  const u=Cesium.Cartesian3.multiplyByScalar(up,Math.sin(Cesium.Math.toRadians(ang)),new Cesium.Cartesian3());
+  return Cesium.Cartesian3.add(e,u,new Cesium.Cartesian3());
+}
+// reference: BLUE tail -> pos -> RED nose target (down the direction of travel)
+let refB=null,refR=null;
+function drawRef(){
+  const vel=velVec();
+  const back=Cesium.Cartesian3.add(pos,Cesium.Cartesian3.multiplyByScalar(vel,-140,new Cesium.Cartesian3()),new Cesium.Cartesian3());
+  const fwd=Cesium.Cartesian3.add(pos,Cesium.Cartesian3.multiplyByScalar(vel,300,new Cesium.Cartesian3()),new Cesium.Cartesian3());
+  if(refB) v.entities.remove(refB);
+  if(refR) v.entities.remove(refR);
+  refB=v.entities.add({polyline:{positions:[back,pos],width:5,material:Cesium.Color.DEEPSKYBLUE}});
+  refR=v.entities.add({polyline:{positions:[pos,fwd],width:7,material:Cesium.Color.RED}});
+}
+function orient(){
+  const vel=velVec();
+  const m=Cesium.Transforms.rotationMatrixFromPositionVelocity(pos,vel,Cesium.Ellipsoid.WGS84);
+  const velQ=Cesium.Quaternion.normalize(Cesium.Quaternion.fromRotationMatrix(m),new Cesium.Quaternion());
+  const c=corr[cur];
+  const cq=Cesium.Quaternion.fromHeadingPitchRoll(new Cesium.HeadingPitchRoll(
+    Cesium.Math.toRadians(c.yaw),Cesium.Math.toRadians(c.pitch),Cesium.Math.toRadians(c.roll)));
+  return Cesium.Quaternion.multiply(velQ,cq,new Cesium.Quaternion());
+}
+function rebuild(){
+  if(plane) v.entities.remove(plane);
+  plane=v.entities.add({position:pos,orientation:orient(),
+    model:{uri:MODELS[cur],minimumPixelSize:280,maximumScale:20000,scale:1}});
+  drawRef(); hud(); v.scene.requestRender();
+}
+function hud(){
+  const c=corr[cur];
+  document.getElementById("hud").textContent=
+`MODEL CALIBRATION  (nose should point down the RED line, wings level, upright)
+selected: ${cur}     climb: ${climb?"+30 (nose should tilt UP)":"level"}
+
+  ${cur}:  yaw=${c.yaw}   pitch=${c.pitch}   roll=${c.roll}   (degrees)
+
+keys:
+  g / t      select glider / tug
+  a / d      yaw  - / +        (turn nose left/right)
+  w / s      pitch + / -       (nose up/down)
+  q / e      roll - / +        (bank)
+  hold Shift = 1 degree steps (else 5)
+  c          toggle climb (validate nose tilts up)
+  r          reset this model to 0
+
+report both models' yaw/pitch/roll to Claude.`;
+}
+addEventListener("keydown",ev=>{
+  const s=ev.shiftKey?1:5, c=corr[cur]; let hit=true;
+  switch(ev.key.toLowerCase()){
+    case"g":cur="glider";break; case"t":cur="dr400";break;
+    case"a":c.yaw-=s;break; case"d":c.yaw+=s;break;
+    case"w":c.pitch+=s;break; case"s":c.pitch-=s;break;
+    case"q":c.roll-=s;break; case"e":c.roll+=s;break;
+    case"c":climb=!climb;break; case"r":corr[cur]={yaw:0,pitch:0,roll:0};break;
+    default:hit=false;
+  }
+  if(hit){ev.preventDefault(); if(ev.key.toLowerCase()==="g"||ev.key.toLowerCase()==="t")rebuild(); else if(plane){plane.orientation=orient(); drawRef(); hud(); v.scene.requestRender();}}
+});
+rebuild();
+v.camera.lookAt(pos,new Cesium.Cartesian3(0,-480,150));  // view from the south, up a bit: east=right, up=up
+</script></body></html>"""
+
+
 def _live_page() -> str:
     models = {k: f"models/{v}" for k, v in MODEL_FILES.items()}
     return LIVE_HTML.replace("__CES__", LIVE_CES).replace("__MODELS__", json.dumps(models))
@@ -696,6 +793,8 @@ def make_handler(status, data_dir, replay_script, models_dir, hub):
                 self._stream()
             elif path == "/live":
                 self._send(200, _live_page())
+            elif path == "/calibrate":
+                self._send(200, _calibrate_page())
             elif path == "/replay":
                 self._replay()
             elif path.startswith("/models/"):
