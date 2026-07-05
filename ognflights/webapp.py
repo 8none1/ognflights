@@ -326,7 +326,7 @@ function ensure(addr,name,color,model){
     // nose-forward: driven by the smoothed lookback vector (see updateOrientation);
     // undefined until the aircraft has moved enough, then holds the last-good heading.
     orientation:new Cesium.CallbackProperty(()=>e._ori,false),
-    model:{uri:MODELS[model]||MODELS.glider, minimumPixelSize:64, maximumScale:20000, scale:1,
+    model:{uri:MODELS[model]||MODELS.glider, minimumPixelSize:40, maximumScale:20000, scale:1,
       color:col, colorBlendMode:Cesium.ColorBlendMode.MIX, colorBlendAmount:0.5,
       silhouetteColor:col, silhouetteSize:1.5},
     // floating altitude + rate-of-climb readout, hovering above the model. Both values are
