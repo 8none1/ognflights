@@ -740,8 +740,8 @@ new Cesium.ScreenSpaceEventHandler(viewer.scene.canvas).setInputAction(function(
   // Small unobtrusive corner title so the screen has some context.
   const title=document.createElement("div");
   title.textContent="Gransden - live";
-  title.style.cssText="position:fixed;bottom:10px;left:12px;z-index:20;color:#fff;"
-    +"font:14px sans-serif;opacity:.6;text-shadow:0 0 4px #000;pointer-events:none";
+  title.style.cssText="position:fixed;bottom:10px;left:50%;transform:translateX(-50%);"
+    +"z-index:20;color:#fff;font:14px sans-serif;opacity:.6;text-shadow:0 0 4px #000;pointer-events:none";
   document.body.appendChild(title);
 
   // Continuous rendering for a smooth orbit (kiosk, so power/heat are a non-issue).
