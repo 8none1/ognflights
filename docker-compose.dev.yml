@@ -1,0 +1,14 @@
+# Optional dev overlay: run the app from the checkout instead of the baked image, so a code
+# change deploys in seconds without an image rebuild or registry round-trip.
+#
+#   Enter dev mode:  docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
+#   Iterate:         git pull   (or edit files here)   &&   docker compose restart
+#   Back to image:   docker compose up -d              (base file only, drops the mounts)
+#
+# NOT applied by default. The normal deploy is image-based: docker compose pull && docker compose up -d
+services:
+  ognflights:
+    volumes:
+      - ./ognflights:/app/ognflights:ro
+      - ./replay:/app/replay:ro
+      - ./cli.py:/app/cli.py:ro

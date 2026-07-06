@@ -12,11 +12,9 @@ services:
     volumes:
       - ./data:/app/data
       - ./secrets/deploy_key:/keys/deploy_key:ro   # SSH deploy key for the public-data push (never in the image)
-      # Run the app from the checkout (shadows the image's copy) so `git pull && docker compose
-      # restart` deploys a code change in seconds, no image rebuild / registry round-trip.
-      - ./ognflights:/app/ognflights:ro
-      - ./replay:/app/replay:ro
-      - ./cli.py:/app/cli.py:ro
+      # For a fast dev loop (run code from the checkout, no image rebuild) add the overlay:
+      #   docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
+      # Normal deploy uses the prebuilt image: docker compose pull && docker compose up -d
     environment:
       # Hourly public-data publisher. OFF by default; set OGNFLIGHTS_PUBLISH=1 to enable.
       OGNFLIGHTS_PUBLISH: "1"
