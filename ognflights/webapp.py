@@ -256,7 +256,14 @@ font:12px sans-serif;padding:8px 10px;border-radius:6px;max-height:90vh;overflow
 .sw{display:inline-block;width:12px;height:12px;margin-right:6px;border-radius:2px;vertical-align:middle}
 .hint{opacity:.6;font-size:11px}
 #legend label{cursor:pointer}</style>
-</head><body><div id="c"></div><div id="legend"><div id="legdyn"><b>Live - Gransden</b><br><span class="hint">connecting...</span></div></div>
+</head><body>
+<div style="position:fixed;top:8px;left:50%;transform:translateX(-50%);z-index:20;
+background:rgba(0,0,0,.6);color:#fff;padding:5px 9px;border-radius:6px;font:13px sans-serif">
+<b>Live</b>
+<a href="/" style="color:#8cf;margin-left:8px;text-decoration:none">home</a>
+<a href="/replay" style="color:#8cf;margin-left:8px;text-decoration:none">replay</a>
+<a href="/stats" style="color:#8cf;margin-left:8px;text-decoration:none">stats</a></div>
+<div id="c"></div><div id="legend"><div id="legdyn"><b>Live - Gransden</b><br><span class="hint">connecting...</span></div></div>
 <script>
 const MODELS=__MODELS__;      // {glider:"models/AS21.glb", dr400:"models/DR40.glb"}
 Cesium.Ion.defaultAccessToken="";
