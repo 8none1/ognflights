@@ -53,6 +53,10 @@ GROUND_AGL_FT = 0
 # A flight must climb at least this far above ground and last at least this long.
 MIN_FLIGHT_PEAK_AGL_FT = 150
 MIN_FLIGHT_SECONDS = 90
+# ...but a brief climb still counts (a launch failure / aborted launch) if it reaches this
+# height above the field, even under MIN_FLIGHT_SECONDS: a real launch always clears a couple
+# of hundred feet, whereas ground noise / taxiing never does.
+LAUNCH_FAILURE_AGL_FT = 200
 # Landed end condition: end a flight once the aircraft has been both LOW and
 # STATIONARY for a continuous run of at least LANDED_STATIONARY_SECONDS. This ends
 # a flight cleanly at touchdown even when the glider then sits at ~field elevation

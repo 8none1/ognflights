@@ -8,8 +8,8 @@ import math
 from dataclasses import dataclass, field
 
 from .config import (BRIDGE_MAX_GAP_SECONDS, GROUND_AGL_FT, LANDED_MAX_AGL_FT,
-                     LANDED_SPEED_KT, LANDED_STATIONARY_SECONDS, MAX_FIX_GAP_SECONDS,
-                     MIN_FLIGHT_PEAK_AGL_FT, MIN_FLIGHT_SECONDS, Site)
+                     LANDED_SPEED_KT, LANDED_STATIONARY_SECONDS, LAUNCH_FAILURE_AGL_FT,
+                     MAX_FIX_GAP_SECONDS, MIN_FLIGHT_PEAK_AGL_FT, MIN_FLIGHT_SECONDS, Site)
 from .store import Fix
 
 
@@ -105,8 +105,11 @@ def segment(address: str, fixes: list[Fix], site: Site) -> list[Flight]:
 
     real = []
     for fl in flights:
-        if (fl.peak_alt_ft() - ground) >= MIN_FLIGHT_PEAK_AGL_FT \
-                and fl.duration_s >= MIN_FLIGHT_SECONDS:
+        peak_agl = fl.peak_alt_ft() - ground
+        # A normal flight (high enough AND long enough), or a brief-but-genuine launch that
+        # reached launch-failure height (an aborted launch, which never lasts long enough).
+        if peak_agl >= MIN_FLIGHT_PEAK_AGL_FT and (
+                fl.duration_s >= MIN_FLIGHT_SECONDS or peak_agl >= LAUNCH_FAILURE_AGL_FT):
             real.append(fl)
     return real
 
