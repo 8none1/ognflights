@@ -670,6 +670,52 @@ new Cesium.ScreenSpaceEventHandler(viewer.scene.canvas).setInputAction(function(
     _tip.style.display="block";
   } else { _tip.style.display="none"; }
 }, Cesium.ScreenSpaceEventType.MOUSE_MOVE);
+
+// --- Demo / kiosk mode (big-screen display) -------------------------------------------
+// Opt-in via /live?demo=1. Everything above is untouched: same SSE traffic, models, trails
+// and readouts. Demo mode only (a) hides the UI chrome, (b) turns OFF requestRenderMode so
+// Cesium renders every frame, and (c) slowly orbits the camera around the airfield forever
+// via requestAnimationFrame. Heading is derived from wall-clock ELAPSED TIME, so the orbit
+// speed is frame-rate independent. camera.lookAt() locks out manual control, which is what a
+// kiosk wants. When ?demo is absent, none of this runs and /live behaves exactly as before.
+(function(){
+  const qp=new URLSearchParams(location.search);
+  if(!qp.has("demo")) return;   // plain /live: leave everything alone
+  const num=(k,d)=>{ const v=parseFloat(qp.get(k)); return Number.isFinite(v)?v:d; };
+  const SECS=Math.max(5, num("secs", 120));   // seconds per full 360 rotation (gentle by default)
+  const PITCH=num("pitch", -30);              // camera tilt in degrees (looking down)
+  const RANGE=Math.max(200, num("range", 4500)); // camera distance from centre, metres
+  const LON=num("lon", __DEMOLON__);          // orbit centre (defaults to the airfield)
+  const LAT=num("lat", __DEMOLAT__);
+  const CENTRE_H=(FIELD_ELEV_FT*0.3048)+100;  // a little above the field so the ground is in view
+
+  // Hide the chrome for a clean screen: the top nav strip and the legend/settings panel.
+  // Aircraft models, trails and readouts are entities in the Cesium scene, so they stay.
+  document.querySelectorAll("body > div").forEach(el=>{
+    if(el.id!=="c") el.style.display="none";   // nav strip + #legend; keep the canvas host
+  });
+  const legend=document.getElementById("legend");
+  if(legend) legend.style.display="none";
+
+  // Small unobtrusive corner title so the screen has some context.
+  const title=document.createElement("div");
+  title.textContent="Gransden - live";
+  title.style.cssText="position:fixed;bottom:10px;left:12px;z-index:20;color:#fff;"
+    +"font:14px sans-serif;opacity:.6;text-shadow:0 0 4px #000;pointer-events:none";
+  document.body.appendChild(title);
+
+  // Continuous rendering for a smooth orbit (kiosk, so power/heat are a non-issue).
+  viewer.scene.requestRenderMode=false;
+
+  const centre=Cesium.Cartesian3.fromDegrees(LON, LAT, CENTRE_H);
+  const toR=Cesium.Math.toRadians;
+  function orbit(now){
+    const heading=((now/1000)/SECS)*360.0;   // degrees, time-based so it is frame-rate independent
+    viewer.camera.lookAt(centre, new Cesium.HeadingPitchRange(toR(heading), toR(PITCH), RANGE));
+    requestAnimationFrame(orbit);
+  }
+  requestAnimationFrame(orbit);
+})();
 </script></body></html>"""
 
 
@@ -773,7 +819,9 @@ v.camera.lookAt(pos,new Cesium.Cartesian3(0,-480,150));  // view from the south,
 def _live_page() -> str:
     models = {k: f"models/{v}" for k, v in MODEL_FILES.items()}
     return (LIVE_HTML.replace("__CES__", LIVE_CES).replace("__MODELS__", json.dumps(models))
-            .replace("__FIELDELEV__", repr(float(GRANSDEN.elevation_ft))))
+            .replace("__FIELDELEV__", repr(float(GRANSDEN.elevation_ft)))
+            .replace("__DEMOLON__", repr(float(GRANSDEN.lon)))
+            .replace("__DEMOLAT__", repr(float(GRANSDEN.lat))))
 
 
 def _home_page(status: dict, data_dir: str) -> str:
