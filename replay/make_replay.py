@@ -89,6 +89,7 @@ const TAILSECS=__TAILSECS__;  // sliding "tail" trail: seconds of track kept beh
 let tailSecs=TAILSECS;        // live-adjustable via the settings slider
 const MULT=__MULT__;
 const M_TO_FT=1/0.3048, MS_TO_KT=1/0.514444;  // metres->feet, vertical m/s -> knots
+const FIELD_ELEV_FT=__FIELDELEV__;  // field elevation (ft AMSL); readout shows true altitude AMSL
 const VARIO_WIN_S=18;               // vario smoothing window (s): least-squares slope of alt vs time
 let readoutsOn=true;                // settings toggle: show/hide the per-aircraft readout labels
 Cesium.Ion.defaultAccessToken="";
@@ -133,7 +134,7 @@ function buildReadout(samples){
   varioKt.setInterpolationOptions({interpolationDegree:1,interpolationAlgorithm:Cesium.LinearApproximation});
   let j=0;  // trailing window start index; advances monotonically
   for(let i=0;i<n;i++){
-    altFt.addSample(times[i], altM[i]*M_TO_FT);   // height above the field (AGL at the runway)
+    altFt.addSample(times[i], altM[i]*M_TO_FT + FIELD_ELEV_FT);   // altitude AMSL
     while(secs[i]-secs[j] > VARIO_WIN_S) j++;
     // least-squares slope of altM vs secs over [j..i]
     let cnt=0,sx=0,sy=0,sxx=0,sxy=0;
@@ -698,6 +699,7 @@ def render_html(*, title, payload, home, myaw, trail, speed_colour, single_link,
             .replace("__SINGLELINK__", json.dumps(single_link))
             .replace("__PATHRES__", repr(path_resolution))
             .replace("__TAILSECS__", str(tail_seconds))
+            .replace("__FIELDELEV__", repr(float(GRANSDEN.elevation_ft)))
             .replace("__MULT__", str(mult)))
 
 

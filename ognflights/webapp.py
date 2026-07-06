@@ -306,6 +306,7 @@ const ORIENT_STATIONARY_M=10; // below this displacement, keep the last-good hea
 const PITCH_WINDOW_S=30;  // seconds of track for the least-squares climb-rate fit (this IS the smoothing)
 const PITCH_MAX_DEG=45;   // safety clamp (real steep climbs/descents still show)
 const M_TO_FT=1/0.3048, MS_TO_KT=1/0.514444;  // metres->feet, vertical m/s -> knots
+const FIELD_ELEV_FT=__FIELDELEV__;  // field elevation (ft AMSL); readout shows true altitude AMSL
 const VARIO_WIN_S=18;     // vario smoothing window (s): least-squares slope of height vs time
 // Despike: some aircraft (notably ADS-B tugs) occasionally report a single position
 // ~150-300 m off that snaps back on the next fix ("out-and-back" spike). It draws a stray
@@ -435,7 +436,7 @@ function updateOrientation(e){
   // window -> knots. This is the same slope-of-height maths the pitch fit below uses (which
   // tames the noisy OGN GPS altitude), just over the shorter readout window; both are stored on
   // e once per fix and read by the label callback, so nothing is recomputed per frame.
-  e._alt=last[2]*M_TO_FT;
+  e._alt=last[2]*M_TO_FT + FIELD_ELEV_FT;   // altitude AMSL (above-field + field elevation)
   if(n>=2 && curTs!=null){
     let vs=n-1;
     for(let i=n-2;i>=0;i--){ vs=i; if(dp[i][3]!=null && curTs-dp[i][3]>=VARIO_WIN_S) break; }
@@ -771,7 +772,8 @@ v.camera.lookAt(pos,new Cesium.Cartesian3(0,-480,150));  // view from the south,
 
 def _live_page() -> str:
     models = {k: f"models/{v}" for k, v in MODEL_FILES.items()}
-    return LIVE_HTML.replace("__CES__", LIVE_CES).replace("__MODELS__", json.dumps(models))
+    return (LIVE_HTML.replace("__CES__", LIVE_CES).replace("__MODELS__", json.dumps(models))
+            .replace("__FIELDELEV__", repr(float(GRANSDEN.elevation_ft))))
 
 
 def _home_page(status: dict, data_dir: str) -> str:
