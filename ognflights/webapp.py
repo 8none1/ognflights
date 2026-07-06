@@ -10,6 +10,7 @@
 
 Runs in a thread alongside the `watch` collector, sharing a status dict + a live hub.
 """
+import colorsys
 import glob
 import http.server
 import json
@@ -53,12 +54,15 @@ def _live_model(model_str: str, ac_type: str) -> str:
 
 
 def live_color(address: str) -> str:
-    """Stable palette colour for an aircraft, deterministic on its address so the
-    initial /live.json snapshot and the /live.stream events always agree."""
+    """A distinct, vivid colour per aircraft, deterministic on its address so the initial
+    /live.json snapshot and the /live.stream events always agree. Uses a hue derived from
+    the address hash (360 hues) rather than a small fixed palette, so different aircraft
+    (e.g. two flying together) don't collide onto the same colour."""
     h = 0
     for ch in address:
         h = (h * 31 + ord(ch)) & 0xFFFFFFFF
-    return PALETTE[h % len(PALETTE)]
+    r, g, b = colorsys.hls_to_rgb((h % 360) / 360.0, 0.6, 0.75)  # bright, saturated
+    return "#%02x%02x%02x" % (int(r * 255), int(g * 255), int(b * 255))
 
 
 def live_height_m(alt_ft: float) -> float:
@@ -655,6 +659,17 @@ async function start(){
 }
 start();
 setInterval(prune, 5000);
+
+// Initial sky from ?sky=day|night. Lets the demo/kiosk (where the settings toggle is hidden)
+// choose day or night on the URL; also works on the normal /live. Default stays night.
+(function(){
+  const sky=new URLSearchParams(location.search).get("sky");
+  if(sky!=="day" && sky!=="night") return;
+  const night=(sky==="night");
+  setNight(night);
+  const cb=document.getElementById("nightlbl");
+  if(cb) cb.checked=night;
+})();
 
 // hover tooltip: aircraft name under the cursor
 const _tip=document.createElement("div");
