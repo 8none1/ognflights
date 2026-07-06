@@ -321,6 +321,16 @@ const SPIKE_MIN_M=80;    // both neighbour hops must exceed this for a point to 
 const SPIKE_RATIO=2.5;   // ...and the out-and-back detour must be this much longer than the direct hop
 const ac={};             // address -> {plane, trail, color, name, model, pts[], lastSeen, _ori}
 let trailsOn=true;       // toggled by the "Trail" checkbox in the legend
+// URL-controllable comet trail (for the demo/kiosk big screen). Works on plain /live and /live?demo=1.
+//   ?trail=comet|full   full (default) = the whole bounded point-count trail (current behaviour)
+//   ?trailsecs=N        comet tail length in seconds (default 60, clamped >=5)
+// Comet mode only FILTERS which retained points are DRAWN (by time); it never changes storage
+// (e.pts stays bounded by maxTrail) nor the model position/heading/vario/despike.
+const _tp=new URLSearchParams(location.search);
+const trailMode=(_tp.get("trail")==="comet")?"comet":"full";
+let trailSecs=parseInt(_tp.get("trailsecs"),10);
+if(!Number.isFinite(trailSecs)) trailSecs=60;
+if(trailSecs<5) trailSecs=5;
 let readoutsOn=true;     // toggled by the "altitude / climb readouts" checkbox in the settings panel
 
 // short callsign = the bit in square brackets in the aircraft name (e.g. "G-ELSB [SB]" -> "SB",
@@ -517,6 +527,21 @@ function trailPositions(pts){
   return Cesium.Cartesian3.fromDegreesArrayHeights(flat);
 }
 
+// In comet mode, keep only the retained despiked points whose ts (elem [3], epoch secs)
+// falls within trailSecs of THIS aircraft's most recent point, so the drawn tail slides
+// along behind the aircraft. In full mode the array is returned untouched, so the trail is
+// byte-for-byte the current whole-bounded-trail behaviour. Arrays are small (<=maxTrail).
+function trailWindow(dpts){
+  if(trailMode!=="comet" || dpts.length<2) return dpts;
+  const last=dpts[dpts.length-1];
+  const lastTs=last[3];
+  if(lastTs==null) return dpts;   // no timestamps to filter on: fall back to full
+  const cut=lastTs-trailSecs;
+  let i=dpts.length-1;
+  while(i>0 && dpts[i-1][3]!=null && dpts[i-1][3]>=cut) i--;
+  return (i===0)?dpts:dpts.slice(i);
+}
+
 // append one [lon,lat,height_m,ts] point, keeping the trail bounded, then rebuild the despiked
 // view used for drawing/heading/position (see despike). The model sits on the LAST despiked
 // point, so a spike at the leading edge does not jump it (at most ~1 fix of lag until the spike
@@ -525,7 +550,7 @@ function refresh(e){
   e.dpts=despike(e.pts);
   const dl=e.dpts[e.dpts.length-1];
   e._pos=Cesium.Cartesian3.fromDegrees(dl[0],dl[1],dl[2]);
-  e._trail=trailPositions(e.dpts);
+  e._trail=trailPositions(trailWindow(e.dpts));
   updateOrientation(e);
 }
 function pushPoint(e,pt){
@@ -578,7 +603,7 @@ function applyTrailLength(){
   for(const e of Object.values(ac)){
     if(e.pts.length>maxTrail) e.pts.splice(0,e.pts.length-maxTrail);
     e.dpts=despike(e.pts);
-    e._trail=trailPositions(e.dpts);
+    e._trail=trailPositions(trailWindow(e.dpts));
   }
   if(viewer.scene.requestRenderMode) viewer.scene.requestRender();
 }
