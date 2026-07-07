@@ -320,6 +320,13 @@ const VARIO_WIN_S=18;     // vario smoothing window (s): least-squares slope of 
 const SPIKE_MIN_M=80;    // both neighbour hops must exceed this for a point to count as a spike
 const SPIKE_RATIO=2.5;   // ...and the out-and-back detour must be this much longer than the direct hop
 const ac={};             // address -> {plane, trail, color, name, model, pts[], lastSeen, _ori}
+// Parked/ground overlay: aircraft sitting at the field, from ground events (ev.g). A separate
+// entity set keyed by address, so a parked glider is never confused with an airborne one. These
+// are LIVE-ONLY (never stored/segmented server-side) - the map just mirrors the beacon stream.
+const parked={};         // address -> {plane, label, color, cs, lastSeen}
+const PARKED_GRACE_MS=300000; // parked gliders beacon slowly: keep a marker 5 min after its last ground event
+let parkedOn=true;       // toggled by the "parked aircraft" checkbox in the settings panel
+function parkedPos(lon,lat){ return Cesium.Cartesian3.fromDegrees(lon,lat,0); } // sit ON the ground
 let trailsOn=true;       // toggled by the "Trail" checkbox in the legend
 // URL-controllable comet trail (for the demo/kiosk big screen). Works on plain /live and /live?demo=1.
 //   ?trail=comet|full   full (default) = the whole bounded point-count trail (current behaviour)
@@ -327,7 +334,9 @@ let trailsOn=true;       // toggled by the "Trail" checkbox in the legend
 // Comet mode only FILTERS which retained points are DRAWN (by time); it never changes storage
 // (e.pts stays bounded by maxTrail) nor the model position/heading/vario/despike.
 const _tp=new URLSearchParams(location.search);
-const trailMode=(_tp.get("trail")==="comet")?"comet":"full";
+const DEMO=_tp.has("demo");   // demo/kiosk mode: comet trail, day sky and shallow pitch by default
+const _trail=_tp.get("trail");
+const trailMode=_trail?(_trail==="comet"?"comet":"full"):(DEMO?"comet":"full");
 let trailSecs=parseInt(_tp.get("trailsecs"),10);
 if(!Number.isFinite(trailSecs)) trailSecs=60;
 if(trailSecs<5) trailSecs=5;
@@ -423,6 +432,67 @@ function ensure(addr,name,color,model){
       width:2, material:col.withAlpha(0.55)}
   });
   return e;
+}
+
+// create-or-update a PARKED marker: the aircraft model sitting on the ground, dimmed and
+// translucent, with just a short-callsign label. No trail, no altitude/vario readout. Kept
+// visually distinct from the flying aircraft so a parked glider reads as "on the ground".
+function ensureParked(addr,cs,color,model,lon,lat){
+  let p=parked[addr];
+  const pos=parkedPos(lon,lat);
+  if(p){
+    p._pos=pos; p.lastSeen=Date.now();
+    if(cs){ p.cs=cs; p.label.name=cs+" (parked)"; }
+    if(viewer.scene.requestRenderMode) viewer.scene.requestRender();
+    return p;
+  }
+  const col=Cesium.Color.fromCssColorString(color);
+  p=parked[addr]={color:color,cs:cs,model:model,lastSeen:Date.now(),_pos:pos};
+  p.plane=viewer.entities.add({
+    name:(cs||addr)+" (parked)",
+    show:parkedOn,
+    position:new Cesium.CallbackProperty(()=>p._pos,false),
+    model:{uri:MODELS[model]||MODELS.glider, minimumPixelSize:28, maximumScale:20000, scale:1,
+      // dimmed + translucent so it clearly reads as parked/inactive vs the flying models.
+      color:col.withAlpha(0.55), colorBlendMode:Cesium.ColorBlendMode.MIX, colorBlendAmount:0.85,
+      silhouetteColor:col.withAlpha(0.5), silhouetteSize:1.0}
+  });
+  p.label=viewer.entities.add({
+    name:(cs||addr)+" (parked)",
+    show:parkedOn,
+    position:new Cesium.CallbackProperty(()=>p._pos,false),
+    label:{
+      text:new Cesium.CallbackProperty(()=>p.cs||"",false),
+      font:"11px sans-serif",
+      fillColor:Cesium.Color.WHITE.withAlpha(0.85),
+      showBackground:true,
+      backgroundColor:new Cesium.Color(0,0,0,0.45),
+      backgroundPadding:new Cesium.Cartesian2(5,3),
+      verticalOrigin:Cesium.VerticalOrigin.BOTTOM,
+      horizontalOrigin:Cesium.HorizontalOrigin.CENTER,
+      pixelOffset:new Cesium.Cartesian2(0,-16),
+      disableDepthTestDistance:Number.POSITIVE_INFINITY,
+      distanceDisplayCondition:new Cesium.DistanceDisplayCondition(0.0, 20000.0),
+      translucencyByDistance:new Cesium.NearFarScalar(8000,1.0,20000,0.2)
+    }
+  });
+  if(viewer.scene.requestRenderMode) viewer.scene.requestRender();
+  return p;
+}
+
+// remove a parked marker (both its model + label entities) and forget it
+function removeParked(addr){
+  const p=parked[addr];
+  if(!p) return;
+  viewer.entities.remove(p.plane);
+  viewer.entities.remove(p.label);
+  delete parked[addr];
+}
+
+// show/hide the whole parked overlay without touching airborne aircraft
+function applyParked(){
+  for(const addr of Object.keys(parked)){ parked[addr].plane.show=parkedOn; parked[addr].label.show=parkedOn; }
+  if(viewer.scene.requestRenderMode) viewer.scene.requestRender();
 }
 
 // show/hide every aircraft's trail without touching planes/positions/legend
@@ -574,6 +644,18 @@ function snapshot(a){
 
 // a single streamed fix event
 function onEvent(ev){
+  if(ev.g){                 // ground/parked event: a distinct on-the-ground marker, not an aircraft
+    if(!parkedOn) return;   // overlay toggled off: ignore ground events entirely
+    // if this aircraft is currently shown as airborne, it hasn't really parked - ignore the
+    // ground event (owned/airborne wins). The collector only sends ground for NOT-owned aircraft,
+    // but a just-landed aircraft can still have a live airborne entity mid-prune.
+    if(ac[ev.addr]) return;
+    ensureParked(ev.addr,ev.cs||ev.name,ev.color,ev.model,ev.lon,ev.lat);
+    return;
+  }
+  // normal airborne event: if this aircraft was shown parked, it has launched - drop the marker
+  // so it is never shown twice (parked + flying).
+  if(parked[ev.addr]) removeParked(ev.addr);
   const e=ensure(ev.addr,ev.label||ev.name,ev.color,ev.model);
   e.lastSeen=Date.now();   // keep it alive even if this fix is a duplicate
   // OGN aircraft are heard by several ground receivers, so the same fix arrives more
@@ -593,6 +675,10 @@ function prune(){
       viewer.entities.remove(ac[addr].trail);
       delete ac[addr];
     }
+  }
+  // parked gliders beacon slowly, so give them a longer grace before removal.
+  for(const addr of Object.keys(parked)){
+    if(t-parked[addr].lastSeen>PARKED_GRACE_MS) removeParked(addr);
   }
   renderLegend();
 }
@@ -631,6 +717,7 @@ function buildSettings(){
     +`<label style="display:block;margin-top:4px">trail length: <span id="tlen">${maxTrail}</span> pts<br>`
     +`<input type="range" id="trailrange" min="20" max="1200" step="20" value="${maxTrail}" style="width:150px"></label>`
     +`<label style="display:block;margin-top:4px"><input type="checkbox" id="readoutlbl" checked> altitude / climb readouts</label>`
+    +`<label style="display:block;margin-top:4px"><input type="checkbox" id="parkedlbl" checked> parked aircraft</label>`
     +`<label style="display:block;margin-top:4px"><input type="checkbox" id="nightlbl" checked> Night sky</label>`
     +`<label style="display:block;margin-top:4px"><input type="checkbox" id="placelbl"> place names</label>`
     +`<button id="resetview" style="cursor:pointer;margin-top:6px">reset view</button>`
@@ -643,6 +730,12 @@ function buildSettings(){
     applyTrailLength();
   });
   document.getElementById("readoutlbl").addEventListener("change",e=>{ readoutsOn=e.target.checked; applyReadouts(); });
+  document.getElementById("parkedlbl").addEventListener("change",e=>{
+    parkedOn=e.target.checked;
+    if(!parkedOn){ for(const addr of Object.keys(parked)) removeParked(addr); } // hide + clear so stale ones don't linger
+    applyParked();
+    renderLegend();
+  });
   document.getElementById("nightlbl").addEventListener("change",e=>{ setNight(e.target.checked); });
   document.getElementById("placelbl").addEventListener("change",e=>{
     labelLayer.show=e.target.checked;
@@ -663,7 +756,9 @@ function renderLegend(){
   const items=Object.values(ac);
   const rows=items.map(e=>`<div><span class="sw" style="background:${e.color}"></span>${e.name}</div>`);
   const n=items.length;
-  const head=`<b>Live - Gransden</b><br><span class="hint">${n} aircraft airborne</span>`;
+  const np=Object.keys(parked).length;
+  const parkedHint=(parkedOn && np)?`<br><span class="hint">${np} parked on the ground</span>`:"";
+  const head=`<b>Live - Gransden</b><br><span class="hint">${n} aircraft airborne</span>`+parkedHint;
   document.getElementById("legdyn").innerHTML=head+(rows.length?rows.join(""):"");
 }
 
@@ -689,8 +784,11 @@ setInterval(prune, 5000);
 // choose day or night on the URL; also works on the normal /live. Default stays night.
 (function(){
   const sky=new URLSearchParams(location.search).get("sky");
-  if(sky!=="day" && sky!=="night") return;
-  const night=(sky==="night");
+  let night;
+  if(sky==="day") night=false;
+  else if(sky==="night") night=true;
+  else if(DEMO) night=false;   // demo/kiosk defaults to a day sky
+  else return;                 // plain /live, no sky param: leave the default (night)
   setNight(night);
   const cb=document.getElementById("nightlbl");
   if(cb) cb.checked=night;
@@ -723,7 +821,7 @@ new Cesium.ScreenSpaceEventHandler(viewer.scene.canvas).setInputAction(function(
   if(!qp.has("demo")) return;   // plain /live: leave everything alone
   const num=(k,d)=>{ const v=parseFloat(qp.get(k)); return Number.isFinite(v)?v:d; };
   const SECS=Math.max(5, num("secs", 120));   // seconds per full 360 rotation (gentle by default)
-  const PITCH=num("pitch", -30);              // camera tilt in degrees (looking down)
+  const PITCH=num("pitch", -10);              // camera tilt in degrees (shallow by default)
   const RANGE=Math.max(200, num("range", 4500)); // camera distance from centre, metres
   const LON=num("lon", __DEMOLON__);          // orbit centre (defaults to the airfield)
   const LAT=num("lat", __DEMOLAT__);
@@ -743,6 +841,13 @@ new Cesium.ScreenSpaceEventHandler(viewer.scene.canvas).setInputAction(function(
   title.style.cssText="position:fixed;bottom:10px;left:50%;transform:translateX(-50%);"
     +"z-index:20;color:#fff;font:14px sans-serif;opacity:.6;text-shadow:0 0 4px #000;pointer-events:none";
   document.body.appendChild(title);
+
+  // Small clickable link back home (the nav strip is hidden in demo mode).
+  const homeLink=document.createElement("a");
+  homeLink.href="/"; homeLink.textContent="home";
+  homeLink.style.cssText="position:fixed;top:10px;left:12px;z-index:21;color:#8cf;"
+    +"font:13px sans-serif;opacity:.75;text-decoration:none;text-shadow:0 0 4px #000";
+  document.body.appendChild(homeLink);
 
   // Continuous rendering for a smooth orbit (kiosk, so power/heat are a non-issue).
   viewer.scene.requestRenderMode=false;
@@ -893,6 +998,8 @@ def _home_page(status: dict, data_dir: str) -> str:
     cards = [
         {"href": "/live", "title": "Live",
          "desc": "Real-time 3D view of aircraft airborne right now."},
+        {"href": "/live?demo=1", "title": "Tour mode",
+         "desc": "Big-screen kiosk view: camera slowly orbits the field over live traffic."},
         {"href": "/replay", "title": "Daily replay",
          "desc": "3D replay of a day's flights. Pick any day with the date picker."},
         {"href": "/stats", "title": "Stats",

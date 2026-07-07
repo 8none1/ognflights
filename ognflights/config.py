@@ -32,6 +32,13 @@ LAUNCH_MAX_AGL_FT = 200         # "low" = within this height above the field ele
 FOLLOW_IDLE_TIMEOUT_S = 600
 # Buffer this many seconds of an aircraft's pre-ownership fixes so we keep the launch roll.
 LAUNCH_BUFFER_S = 60
+# Parked/ground overlay (LIVE-ONLY, ephemeral - never stored, never segmented). Aircraft
+# sitting at the field with their FLARM on are already in the catch-circle stream; surface
+# them so the live map shows gliders that are really sitting there.
+# Throttle: publish at most one ground event per aircraft per this many seconds.
+GROUND_PUBLISH_INTERVAL_S = 8
+# Forget an aircraft's ground-publish throttle state after this long unheard (prunes the dict).
+GROUND_STATE_TTL_S = 600
 # Reject spatially-impossible position fixes at capture: a fix implying a ground speed above
 # this (from the last accepted position) is a garbage ADS-B/OGN report (they arrive in good
 # time order, so the dedup/ts guard can't catch them). Nothing we track goes near this.

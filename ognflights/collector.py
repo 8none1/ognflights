@@ -93,6 +93,12 @@ def watch(ddb: DDB, max_seconds: int | None = None, commit_every: int = 100,
     else:
         live_color = live_height_m = _live_model = None
 
+    def _short_cs(label: str) -> str:
+        """Short callsign = the bit in [brackets] (mirrors the live view's shortCallsign)."""
+        if "[" in label and "]" in label:
+            return label[label.index("[") + 1:label.index("]")].strip()
+        return label
+
     def _publish(b, dev):
         if hub is None:
             return
@@ -106,6 +112,33 @@ def watch(ddb: DDB, max_seconds: int | None = None, commit_every: int = 100,
             "lon": round(b.lon, 6),
             "lat": round(b.lat, 6),
             "height_m": live_height_m(b.altitude_ft),
+            "ts": int(b.ts.timestamp()),
+            "model": _live_model(model_str, ac_type),
+            "color": live_color(b.address),
+        })
+
+    # Parked/ground overlay: aircraft sitting at the field with their FLARM on are already
+    # in the catch-circle beacon stream. Surface them as a LIVE-ONLY, ephemeral overlay -
+    # never stored, never segmented. Throttled per address so the stream stays light.
+    ground_last_pub: dict[str, float] = {}      # hex -> wall-clock of last ground publish
+
+    def _publish_ground(b, dev, now):
+        if hub is None:
+            return
+        prev = ground_last_pub.get(b.address)
+        if prev is not None and now - prev < config.GROUND_PUBLISH_INTERVAL_S:
+            return                              # throttle: at most one ground event / interval
+        ground_last_pub[b.address] = now
+        label = _label_for(dev) or b.address
+        model_str = dev.model if dev else ""
+        ac_type = (dev.aircraft_type if dev else None) or b.aircraft_type or ""
+        hub.publish({
+            "g": 1,                             # ground/parked flag (vs a normal airborne event)
+            "addr": b.address,
+            "name": label,
+            "cs": _short_cs(label),
+            "lon": round(b.lon, 6),
+            "lat": round(b.lat, 6),
             "ts": int(b.ts.timestamp()),
             "model": _live_model(model_str, ac_type),
             "color": live_color(b.address),
@@ -242,6 +275,10 @@ def watch(ddb: DDB, max_seconds: int | None = None, commit_every: int = 100,
                        _haversine_m(b.lat, b.lon, config.LAUNCH_LAT, config.LAUNCH_LON) <= config.LAUNCH_RADIUS_M)
                 if low:
                     armed.add(b.address)
+                    # parked at the field and not (yet) being followed: surface it on the
+                    # live overlay (ephemeral, never stored). Once it launches it enters
+                    # `owned` and this branch stops running for it.
+                    _publish_ground(b, ddb.lookup(b.address), now)
                 elif b.address in armed and b.altitude_ft > ceiling:
                     # armed at the field then climbed away -> a launch from Gransden
                     owned.add(b.address); armed.discard(b.address)
@@ -273,6 +310,12 @@ def watch(ddb: DDB, max_seconds: int | None = None, commit_every: int = 100,
                     buffers.pop(h, None); armed.discard(h)
                     if h not in owned:
                         sources.pop(h, None)
+                # prune ground-publish throttle state for aircraft we haven't heard in a while,
+                # so the dict cannot grow unbounded (mirrors the parked prune grace on the client).
+                gground = [h for h in ground_last_pub
+                           if now - last_seen.get(h, 0) > config.GROUND_STATE_TTL_S]
+                for h in gground:
+                    ground_last_pub.pop(h, None)
                 store.commit()
 
             if max_seconds is not None and now - start >= max_seconds:
