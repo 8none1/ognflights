@@ -24,3 +24,17 @@ services:
       OGNFLIGHTS_PUBLISH_DAYS: "7"
       OGNFLIGHTS_PUBLISH_INTERVAL_S: "3600"
       OGNFLIGHTS_PUBLISH_WORKDIR: "/app/data/.publish-repo"
+
+  # Cloudflare Tunnel: makes the dashboard reachable publicly (e.g. ogn.8none1.org) without a
+  # public IP or inbound ports - cloudflared dials OUT to Cloudflare. Same network as ognflights
+  # so the tunnel's ingress can reach http://ognflights:8080. Token lives in a git-ignored .env
+  # (CLOUDFLARED_TOKEN=...); the tunnel just won't connect if it's unset.
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: ognflights-cloudflared
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run
+    environment:
+      TUNNEL_TOKEN: ${CLOUDFLARED_TOKEN:-}
+    depends_on:
+      - ognflights

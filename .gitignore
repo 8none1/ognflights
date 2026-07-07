@@ -21,3 +21,6 @@ site/flights/_*
 # deploy secrets: the publish worker's SSH deploy key must NEVER be committed
 secrets/
 deploy_key*
+
+# Local secrets (Cloudflare tunnel token etc.) - never commit
+.env
