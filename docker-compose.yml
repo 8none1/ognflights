@@ -7,6 +7,10 @@ services:
     build: .
     container_name: ognflights
     restart: unless-stopped
+    # Run a real init (tini) as PID 1 to reap any orphaned/reparented children. The app
+    # already runs auto-maintenance inline (gc.autoDetach=false) so git no longer leaks
+    # zombies, but python-as-PID-1 has no generic reaper - this is the belt-and-braces.
+    init: true
     ports:
       - "8477:8080"          # http://perceptron:8477/  (replay)  and /stats  -- change host port if it clashes
     volumes:

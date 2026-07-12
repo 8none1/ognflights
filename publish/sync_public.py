@@ -123,15 +123,22 @@ def sync(out_dir, data_dir="data", days=7, models_url="models", today=None):
     return written, manifest
 
 
+# Never let git spin off a *detached* background gc/maintenance: as a container PID 1 those
+# orphans reparent to us and are never reaped (see publish/worker.py for the full story).
+# autoDetach=false keeps any auto-maintenance inline, where subprocess.run() reaps it.
+_NO_DETACH = ["-c", "gc.autoDetach=false", "-c", "maintenance.autoDetach=false"]
+
+
 def _git(out_dir, *args):
-    subprocess.run(["git", "-C", out_dir, *args], check=True)
+    subprocess.run(["git", "-C", out_dir, *_NO_DETACH, *args], check=True)
 
 
 def _commit(out_dir, push=False):
     """Stage + commit the JSON changes in a public-data worktree. Pushes only if `push`."""
     _git(out_dir, "add", "-A")
     # nothing staged -> skip the commit (avoids empty commits on a no-op run)
-    if subprocess.run(["git", "-C", out_dir, "diff", "--cached", "--quiet"]).returncode == 0:
+    if subprocess.run(["git", "-C", out_dir, *_NO_DETACH,
+                       "diff", "--cached", "--quiet"]).returncode == 0:
         print("no changes to commit")
         return
     stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%MZ")

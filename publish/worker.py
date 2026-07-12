@@ -56,10 +56,20 @@ def _git_env(deploy_key: str) -> dict:
     return env
 
 
+# Disable git's *detached* background maintenance. After a fetch/commit git otherwise
+# double-forks a `git gc/maintenance --auto` that we never spawned directly: it reparents
+# to PID 1 (this process, as the container's init) and, because nothing reaps arbitrary
+# orphans here, lingers as a <defunct> git zombie forever (hundreds observed in prod).
+# With autoDetach off any auto-maintenance runs INLINE in the git command below, which
+# subprocess.run() waits on and reaps like every other child. Packing still happens; it
+# just no longer escapes into an unreapable background process.
+_NO_DETACH = ["-c", "gc.autoDetach=false", "-c", "maintenance.autoDetach=false"]
+
+
 def _git(workdir, *args, env=None, check=True, capture=False):
-    """Run a git command in workdir. Returns CompletedProcess."""
+    """Run a git command in workdir. Returns CompletedProcess (waited on + reaped)."""
     return subprocess.run(
-        ["git", "-C", workdir, *args],
+        ["git", "-C", workdir, *_NO_DETACH, *args],
         env=env, check=check,
         capture_output=capture, text=True,
     )
