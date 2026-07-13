@@ -236,14 +236,21 @@ def watch(ddb: DDB, max_seconds: int | None = None, commit_every: int = 100,
     n = 0
     last_trim = start
     if status is not None:
-        status.update(started=start, connected=False, following=len(owned), stored=0, last_beacon=None)
+        status.update(started=start, connected=False, following=len(owned), stored=0,
+                      last_beacon=None, last_line=None)
     try:
         for b in client.beacons():
             now = time.time()
             if status is not None:
+                # Any line from the server (incl. None keepalive ticks) proves the
+                # backend link is alive; only real beacons count as aircraft traffic.
                 status["connected"] = True
-                status["last_beacon"] = now
+                status["last_line"] = now
                 status["following"] = len(owned)
+            if b is None:
+                continue                       # keepalive tick: link up, no aircraft data
+            if status is not None:
+                status["last_beacon"] = now
                 status["stored"] = n
             y = datetime.now(timezone.utc).year
             if y != year:

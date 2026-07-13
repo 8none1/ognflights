@@ -162,33 +162,51 @@ def publish_once() -> bool:
     return True
 
 
-def _loop(interval_s):
-    """Worker loop: bootstrap publish on startup, then every interval_s."""
+def _loop(interval_s, status=None):
+    """Worker loop: bootstrap publish on startup, then every interval_s.
+
+    If `status` (the shared collector status dict) is given, record the outcome of
+    each cycle under status["publish"] so the /stats page and /healthz can surface
+    whether publishing is keeping up.
+    """
     while True:
+        ok, err = False, None
         try:
             publish_once()
+            ok = True
         except subprocess.CalledProcessError as e:
+            err = f"git: {e}"
             logger.warning("publish failed (git): %s%s", e,
                            f"\n{e.stderr}" if getattr(e, "stderr", None) else "")
         except Exception as e:  # never let a publish error touch capture
+            err = str(e)
             logger.warning("publish failed: %s", e)
+        if status is not None:
+            status["publish"] = {"enabled": True, "ts": time.time(), "ok": ok,
+                                 "error": err, "interval_s": interval_s}
         time.sleep(interval_s)
 
 
-def start_worker():
+def start_worker(status=None):
     """Start the hourly publish worker as a daemon thread, if enabled.
 
     Returns the Thread, or None if publishing is off. Never raises: any setup error
-    is logged so it can never take down the collector.
+    is logged so it can never take down the collector. Records its state into
+    status["publish"] (if `status` is given) for the dashboard/health check.
     """
     if not enabled():
         logger.info("publish worker disabled (set OGNFLIGHTS_PUBLISH=1 to enable)")
+        if status is not None:
+            status["publish"] = {"enabled": False}
         return None
     interval_s = int(_env("OGNFLIGHTS_PUBLISH_INTERVAL_S", "3600"))
     logger.info("publish worker enabled: every %ds -> %s (%s)",
                 interval_s,
                 _env("OGNFLIGHTS_PUBLISH_BRANCH", "public-data"),
                 _env("OGNFLIGHTS_PUBLISH_REMOTE"))
-    t = threading.Thread(target=_loop, args=(interval_s,), daemon=True)
+    if status is not None:
+        status["publish"] = {"enabled": True, "ts": None, "ok": None,
+                             "error": None, "interval_s": interval_s}
+    t = threading.Thread(target=_loop, args=(interval_s, status), daemon=True)
     t.start()
     return t

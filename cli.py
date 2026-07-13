@@ -58,10 +58,34 @@ def cmd_watch(a):
     # Hourly public-data publisher (off unless OGNFLIGHTS_PUBLISH=1). Purely additive:
     # a daemon thread, fully isolated so a publish failure can never stall capture.
     from publish.worker import start_worker
-    start_worker()
+    start_worker(status)
     n = watch(ddb, max_seconds=a.minutes * 60 if a.minutes else None,
               status=status, hub=hub)
     print(f"stored {n} fixes")
+
+
+def cmd_healthcheck(a):
+    """Probe the local /healthz endpoint; exit 0 if healthy, 1 otherwise.
+
+    Used by the container HEALTHCHECK: it proves the whole chain (web server up
+    AND the collector's backend link alive), not just that the process exists.
+    Needs no extra tooling in the image - stdlib urllib only.
+    """
+    import sys
+    import urllib.error
+    import urllib.request
+    url = f"http://127.0.0.1:{a.port}/healthz"
+    try:
+        with urllib.request.urlopen(url, timeout=a.timeout) as r:
+            code, body = r.status, r.read().decode("utf-8", "replace")
+    except urllib.error.HTTPError as e:                # 503 = unhealthy, with a JSON body
+        code = e.code
+        body = e.read().decode("utf-8", "replace") if e.fp else str(e)
+    except Exception as e:                             # server down / unreachable
+        print(f"healthcheck: {e}", file=sys.stderr)
+        return 1
+    print(body)
+    return 0 if code == 200 else 1
 
 
 def cmd_collect(a):
@@ -193,6 +217,11 @@ def main():
     w.add_argument("--port", type=int, default=8080, help="HTTP port for --serve (default 8080)")
     w.set_defaults(func=cmd_watch)
 
+    hc = sub.add_parser("healthcheck", help="probe local /healthz; exit 0 healthy, 1 not (for Docker HEALTHCHECK)")
+    hc.add_argument("--port", type=int, default=8080, help="HTTP port the dashboard serves on (default 8080)")
+    hc.add_argument("--timeout", type=float, default=5, help="seconds to wait for /healthz (default 5)")
+    hc.set_defaults(func=cmd_healthcheck)
+
     ac = sub.add_parser("aircraft", help="list aircraft seen on a day")
     ac.add_argument("--day", required=True)
     ac.set_defaults(func=cmd_aircraft)
@@ -234,7 +263,7 @@ def main():
     ea.set_defaults(func=cmd_earth)
 
     args = p.parse_args()
-    args.func(args)
+    raise SystemExit(args.func(args) or 0)
 
 
 if __name__ == "__main__":

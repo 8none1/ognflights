@@ -182,6 +182,11 @@ class OgnClient:
                 pass  # connection gone; re-applied via login on reconnect
 
     def beacons(self):
+        """Yield a Beacon per parsed position, and None on each server keepalive tick.
+
+        The None ticks let a consumer prove the APRS-IS link is still alive during
+        quiet periods (no aircraft in range) without conflating that with a dead link.
+        """
         backoff = 1
         while True:
             try:
@@ -197,9 +202,15 @@ class OgnClient:
                     for raw in f:
                         line = raw.decode("utf-8", "replace").rstrip()
                         if not line or line.startswith("#"):
+                            # Server comment / keepalive. aprsc sends one every ~20-30s
+                            # regardless of traffic, so it proves the backend link is alive
+                            # even when no aircraft are in range. Send our own periodically,
+                            # and yield a None "tick" so the consumer can distinguish "link
+                            # up, no aircraft" from "link dead".
                             if time.time() - last_keepalive > 240:
                                 f.write(b"# keepalive\r\n"); f.flush()
                                 last_keepalive = time.time()
+                            yield None
                             continue
                         b = parse_beacon(line)
                         if b is not None:

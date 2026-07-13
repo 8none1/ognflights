@@ -1,7 +1,12 @@
 """Tiny stdlib web server for the collector container.
 
   /            -> landing page linking to Live / Daily replay / Stats
-  /replay      -> all-gliders 3D replay for a day (?day=, ?address= for single aircraft)
+  /my-flights  -> public "Watch your flight" finder (date + rough time -> replay links)
+  /replay      -> all-gliders 3D replay for a day (?day=, ?address= for single aircraft,
+                  ?t= to keep only the flight airborne at that moment)
+  /download    -> one flight as a file: ?day=&address=&t=&fmt=kml|gpx|igc (same day/
+                  address/t identifiers as the replay links; KML opens in Google Earth)
+  /branding/*  -> club logo etc, served from <data_dir>/branding/ (drop-in, no rebuild)
   /live        -> real-time 3D view of currently-airborne aircraft (SSE-driven)
   /live.json   -> JSON feed of aircraft active in the last ~2 min (initial snapshot)
   /live.stream -> Server-Sent Events: one fix per followed aircraft as it arrives
@@ -25,9 +30,12 @@ import time
 from datetime import datetime, timedelta, timezone
 from urllib.parse import parse_qs, urlparse
 
+from . import export
 from .config import GRANSDEN
 from .flights import segment
 from .store import Store, year_file
+from .theme import (MAP_HELP_BTN, MAP_HELP_HTML, MAP_HELP_JS, THEME_CSS,
+                    header_html, nav_html)
 
 REPLAY_TTL = 60  # seconds to cache the generated replay page
 _cache: dict[str, tuple[str, float]] = {}
@@ -163,6 +171,47 @@ def _parse_day(query: str) -> datetime:
     return _today()
 
 
+# --- /download: give one flight away as a file (Google Earth KML by default) -----------
+# The flight identifier mirrors the replay links: day + device address + ?t= (the moment
+# the flight was airborne, epoch seconds or HH:MM UTC), so the same day/address/t that
+# builds a "/replay?..." link also builds a working "/download?..." link.
+_T_RE = re.compile(r"^(\d{9,}|\d{1,2}:\d{2})$")
+_ADDR_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+DL_CTYPES = {"kml": "application/vnd.google-earth.kml+xml",
+             "gpx": "application/gpx+xml",
+             "igc": "text/plain; charset=utf-8"}
+
+
+def _parse_t(tval: str | None, day: datetime) -> int | None:
+    """?t= as epoch seconds, from '<epoch>' or 'HH:MM' (UTC, on `day`). None if absent."""
+    if not tval:
+        return None
+    if re.match(r"^\d{9,}$", tval):
+        return int(tval)
+    m = re.match(r"^(\d{1,2}):(\d{2})$", tval)
+    if m and int(m.group(1)) < 24 and int(m.group(2)) < 60:
+        return int(day.replace(hour=int(m.group(1)), minute=int(m.group(2)),
+                               second=0, microsecond=0).timestamp())
+    raise ValueError(tval)
+
+
+def _select_flight(flights: list, t: int | None):
+    """Pick the flight `t` refers to, mirroring the replay page's filterTime(): the flight
+    airborne at that moment, else the nearest take-off within 15 minutes. Without a t the
+    choice is only well-defined when the aircraft flew exactly once that day."""
+    if t is None:
+        return flights[0] if len(flights) == 1 else None
+    for fl in flights:
+        if fl.start <= t <= fl.end:
+            return fl
+    best, bd = None, 15 * 60 + 1
+    for fl in flights:
+        d = abs(fl.start - t)
+        if d < bd:
+            bd, best = d, fl
+    return best
+
+
 def _days_with_flights(data_dir: str, limit: int = 21) -> list[str]:
     """Recent days (YYYY-MM-DD) that have stored fixes, newest first, across year files."""
     days: set[str] = set()
@@ -177,24 +226,37 @@ def _days_with_flights(data_dir: str, limit: int = 21) -> list[str]:
     return sorted(days, reverse=True)[:limit]
 
 
-def _nav_html(day: datetime, address: str | None = None) -> str:
-    """Fixed date-picker (prev / date / next) injected into the replay page. In single-aircraft
-    view it keeps the aircraft across dates and offers a link back to all gliders."""
+def _nav_html(day: datetime, address: str | None = None, logo: str = "",
+              t: str | None = None, help_btn: bool = True) -> str:
+    """Fixed date-picker (prev / date / next) + shared nav links, injected into the replay
+    page (which carries THEME_CSS, so the .of-topbar classes resolve). In single-aircraft
+    view it keeps the aircraft across dates, offers a link back to all gliders, and adds a
+    "Google Earth" KML download for the flight (`t` = the replay's ?t= flight selector).
+    Server-side only: the static public replay never gets this bar, so it never gets a
+    download link its host cannot serve."""
     d = day.strftime("%Y-%m-%d")
     prev = (day - timedelta(days=1)).strftime("%Y-%m-%d")
     nxt = (day + timedelta(days=1)).strftime("%Y-%m-%d")
     q = f"&address={address}" if address else ""
-    extra = (f'<a href="/replay?day={d}" style="color:#8cf;margin-left:8px">all gliders</a>'
-             if address else '<a href="/" style="color:#8cf;margin-left:8px">home</a>'
-                             ' <a href="/stats" style="color:#8cf;margin-left:8px">stats</a>')
+    logo_html = f'<img class="nlogo" src="{logo}" alt="">' if logo else ""
+    if address:
+        dl_href = f"/download?day={d}&address={address}&fmt=kml" + (f"&t={t}" if t else "")
+        extra = (f'<a href="/replay?day={d}">all gliders</a> <a href="/">home</a>'
+                 f' <a class="of-btn-secondary" href="{dl_href}"'
+                 ' title="Download this flight as KML for Google Earth">Google Earth &#8595;</a>')
+    else:
+        extra = ('<a href="/">home</a> <a href="/live">live</a>'
+                 ' <a href="/my-flights">my&nbsp;flights</a> <a href="/stats">stats</a>')
+    if help_btn:
+        # reopen control for the map-controls help overlay (wired by delegation in
+        # MAP_HELP_JS, so it works even though this bar is injected after the script).
+        extra += " " + MAP_HELP_BTN
     return (
-        '<div style="position:fixed;top:8px;left:50%;transform:translateX(-50%);z-index:20;'
-        'background:rgba(0,0,0,.6);color:#fff;padding:5px 9px;border-radius:6px;font:13px sans-serif">'
-        f'<a href="/replay?day={prev}{q}" style="color:#8cf;text-decoration:none">&#9664;</a> '
-        f'<input type="date" value="{d}" onchange="location=\'/replay?day=\'+this.value+\'{q}\'" '
-        'style="font:13px sans-serif;background:#222;color:#fff;border:1px solid #555;border-radius:3px"> '
-        f'<a href="/replay?day={nxt}{q}" style="color:#8cf;text-decoration:none">&#9654;</a>'
-        f' {extra}</div>')
+        f'<div class="of-topbar">{logo_html}'
+        f'<a href="/replay?day={prev}{q}">&#9664;</a>'
+        f'<input type="date" value="{d}" onchange="location=\'/replay?day=\'+this.value+\'{q}\'">'
+        f'<a href="/replay?day={nxt}{q}">&#9654;</a>'
+        f'{extra}</div>')
 
 
 def _aircraft_count(day: datetime, data_dir: str) -> int:
@@ -253,21 +315,26 @@ LIVE_HTML = r"""<!DOCTYPE html>
 <html><head><meta charset="utf-8"><title>Live - Gransden</title>
 <script src="__CES__/Cesium.js"></script>
 <link href="__CES__/Widgets/widgets.css" rel="stylesheet">
-<style>html,body,#c{margin:0;padding:0;width:100%;height:100%;overflow:hidden;background:#000}
-#legend{position:absolute;top:8px;left:8px;z-index:10;background:rgba(0,0,0,.6);color:#fff;
-font:12px sans-serif;padding:8px 10px;border-radius:6px;max-height:90vh;overflow:auto;min-width:150px}
+<style>__THEMECSS__
+html,body,#c{margin:0;padding:0;width:100%;height:100%;overflow:hidden;background:#000}
+#legend{position:absolute;top:10px;left:10px;z-index:10;color:var(--text);
+font:12px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif;padding:9px 11px;
+max-height:88vh;overflow:auto;min-width:160px}
+@media(max-width:640px){#legend{top:72px;max-height:70vh}
+.cesium-viewer-toolbar{display:none}}
 #legend b{font-size:14px}
-.sw{display:inline-block;width:12px;height:12px;margin-right:6px;border-radius:2px;vertical-align:middle}
-.hint{opacity:.6;font-size:11px}
+#legend a{color:var(--blue)}
+.sw{display:inline-block;width:12px;height:12px;margin-right:6px;border-radius:3px;vertical-align:middle}
+.hint{color:var(--dim);font-size:11px}
 #legend label{cursor:pointer}</style>
 </head><body>
-<div style="position:fixed;top:8px;left:50%;transform:translateX(-50%);z-index:20;
-background:rgba(0,0,0,.6);color:#fff;padding:5px 9px;border-radius:6px;font:13px sans-serif">
-<b>Live</b>
-<a href="/" style="color:#8cf;margin-left:8px;text-decoration:none">home</a>
-<a href="/replay" style="color:#8cf;margin-left:8px;text-decoration:none">replay</a>
-<a href="/stats" style="color:#8cf;margin-left:8px;text-decoration:none">stats</a></div>
-<div id="c"></div><div id="legend"><div id="legdyn"><b>Live - Gransden</b><br><span class="hint">connecting...</span></div></div>
+<div class="of-topbar">__NAVLOGO__<b>Live</b>
+<a href="/">home</a>
+<a href="/replay">replay</a>
+<a href="/my-flights">my&nbsp;flights</a>
+<a href="/stats">stats</a> __HELPBTN__</div>
+<div id="c"></div><div id="legend" class="of-panel"><div id="legdyn"><b>Live - Gransden</b><br><span class="hint">connecting...</span></div></div>
+__HELPHTML__
 <script>
 const MODELS=__MODELS__;      // {glider:"models/AS21.glb", dr400:"models/DR40.glb"}
 Cesium.Ion.defaultAccessToken="";
@@ -335,6 +402,7 @@ let trailsOn=true;       // toggled by the "Trail" checkbox in the legend
 // (e.pts stays bounded by maxTrail) nor the model position/heading/vario/despike.
 const _tp=new URLSearchParams(location.search);
 const DEMO=_tp.has("demo");   // demo/kiosk mode: comet trail, day sky and shallow pitch by default
+window.OF_HELP_SUPPRESS=DEMO; // kiosk screens are unattended: never auto-show the help overlay
 const _trail=_tp.get("trail");
 const trailMode=_trail?(_trail==="comet"?"comet":"full"):(DEMO?"comet":"full");
 let trailSecs=parseInt(_tp.get("trailsecs"),10);
@@ -796,8 +864,8 @@ setInterval(prune, 5000);
 
 // hover tooltip: aircraft name under the cursor
 const _tip=document.createElement("div");
-_tip.style.cssText="position:fixed;z-index:30;pointer-events:none;display:none;background:rgba(0,0,0,.8);"
-  +"color:#fff;font:12px sans-serif;padding:2px 7px;border-radius:4px;white-space:nowrap";
+_tip.style.cssText="position:fixed;z-index:30;pointer-events:none;display:none;background:var(--overlay);"
+  +"border:1px solid var(--overlay-line);color:var(--text);font:12px system-ui,sans-serif;padding:2px 7px;border-radius:5px;white-space:nowrap";
 document.body.appendChild(_tip);
 new Cesium.ScreenSpaceEventHandler(viewer.scene.canvas).setInputAction(function(mv){
   const p=viewer.scene.pick(mv.endPosition);
@@ -839,14 +907,26 @@ new Cesium.ScreenSpaceEventHandler(viewer.scene.canvas).setInputAction(function(
   const title=document.createElement("div");
   title.textContent="Gransden - live";
   title.style.cssText="position:fixed;bottom:10px;left:50%;transform:translateX(-50%);"
-    +"z-index:20;color:#fff;font:14px sans-serif;opacity:.6;text-shadow:0 0 4px #000;pointer-events:none";
+    +"z-index:20;color:#fff;font:14px system-ui,sans-serif;opacity:.6;text-shadow:0 0 4px #000;pointer-events:none";
   document.body.appendChild(title);
+
+  // club logo (drop-in branding from /branding/, see _logo_url): a small corner mark.
+  // Empty string = no logo file on the volume, so nothing is added.
+  const LOGO="__LOGOURL__";
+  if(LOGO){
+    const li=document.createElement("img");
+    li.src=LOGO; li.alt="";
+    // right:56px keeps the wordmark clear of Cesium's fullscreen button in the corner
+    li.style.cssText="position:fixed;bottom:12px;right:56px;z-index:21;max-height:60px;"
+      +"max-width:220px;opacity:.9;pointer-events:none;filter:brightness(0) invert(1)";
+    document.body.appendChild(li);
+  }
 
   // Small clickable link back home (the nav strip is hidden in demo mode).
   const homeLink=document.createElement("a");
   homeLink.href="/"; homeLink.textContent="home";
-  homeLink.style.cssText="position:fixed;top:10px;left:12px;z-index:21;color:#8cf;"
-    +"font:13px sans-serif;opacity:.75;text-decoration:none;text-shadow:0 0 4px #000";
+  homeLink.style.cssText="position:fixed;top:10px;left:12px;z-index:21;color:var(--blue);"
+    +"font:13px system-ui,sans-serif;opacity:.85;text-decoration:none;text-shadow:0 0 4px #000";
   document.body.appendChild(homeLink);
 
   // Continuous rendering for a smooth orbit (kiosk, so power/heat are a non-issue).
@@ -861,6 +941,8 @@ new Cesium.ScreenSpaceEventHandler(viewer.scene.canvas).setInputAction(function(
   }
   requestAnimationFrame(orbit);
 })();
+
+__HELPJS__
 </script></body></html>"""
 
 
@@ -961,12 +1043,363 @@ v.camera.lookAt(pos,new Cesium.Cartesian3(0,-480,150));  // view from the south,
 </script></body></html>"""
 
 
-def _live_page() -> str:
+def _live_page(data_dir: str = "") -> str:
     models = {k: f"models/{v}" for k, v in MODEL_FILES.items()}
+    logo = _logo_url(data_dir) if data_dir else ""
+    navlogo = f'<img class="nlogo" src="{logo}" alt="">' if logo else ""
     return (LIVE_HTML.replace("__CES__", LIVE_CES).replace("__MODELS__", json.dumps(models))
+            .replace("__THEMECSS__", THEME_CSS)
+            .replace("__NAVLOGO__", navlogo)
+            .replace("__HELPBTN__", MAP_HELP_BTN)
+            .replace("__HELPHTML__", MAP_HELP_HTML)
+            .replace("__HELPJS__", MAP_HELP_JS)
             .replace("__FIELDELEV__", repr(float(GRANSDEN.elevation_ft)))
             .replace("__DEMOLON__", repr(float(GRANSDEN.lon)))
-            .replace("__DEMOLAT__", repr(float(GRANSDEN.lat))))
+            .replace("__DEMOLAT__", repr(float(GRANSDEN.lat)))
+            .replace("__LOGOURL__", logo))
+
+
+# --- club branding: drop-in, no rebuild ---------------------------------------------
+# The club can put a logo at <data_dir>/branding/logo.<ext> (the data dir is already a
+# mounted volume) and it appears on the public pages. No file = no logo, no gap.
+BRANDING_CTYPES = {"png": "image/png", "svg": "image/svg+xml", "webp": "image/webp",
+                   "jpg": "image/jpeg", "jpeg": "image/jpeg"}
+CLUB_NAME = os.environ.get("CLUB_NAME", "")
+
+
+def _logo_url(data_dir: str) -> str:
+    """/branding/logo.<ext> for the first logo file found, else "" (render nothing)."""
+    bdir = os.path.join(data_dir, "branding")
+    for ext in ("svg", "png", "webp", "jpg", "jpeg"):
+        if os.path.isfile(os.path.join(bdir, "logo." + ext)):
+            return "/branding/logo." + ext
+    return ""
+
+
+# "Watch your flight" finder: a public, non-technical page for trial-flight visitors.
+# They know WHEN they flew (roughly) and maybe what the aircraft looked like, never the
+# registration. The page fetches the day's flights from the same public-data branch the
+# public replay uses (last ~7 days), matches on a forgiving time window, and links each
+# candidate to the single-flight replay (/replay?day=&address=&t=). No personal data:
+# OGN only ever identifies the aircraft, never who was in it.
+MINE_DATA_BASE = "https://raw.githubusercontent.com/8none1/ognflights/public-data/"
+MINE_HTML = r"""<!DOCTYPE html>
+<html lang="en-GB"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Watch your flight - Gransden</title>
+<style>__THEMECSS__
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:16px;
+  padding:1.3rem 1.2rem 1.25rem;box-shadow:var(--shadow)}
+.fields{display:grid;grid-template-columns:1fr 1fr;gap:1rem}
+@media(max-width:480px){.fields{grid-template-columns:1fr}}
+label.f{display:block;font-weight:600;font-size:.95rem}
+label.f .hint{display:block;font-weight:400;color:var(--dim);font-size:.82rem;margin:.05rem 0 .35rem}
+input[type=date],input[type=time]{width:100%;padding:.7rem .8rem;font:inherit;font-size:1.1rem;
+  color:var(--text);background:var(--bg);border:1px solid var(--line);border-radius:10px;
+  min-height:3.1rem}
+input:focus{outline:2px solid var(--blue);outline-offset:1px;border-color:transparent}
+fieldset.types{border:0;padding:0;margin:1.25rem 0 0}
+fieldset.types legend{font-weight:600;font-size:.95rem;padding:0}
+fieldset.types .hint{display:block;font-weight:400;color:var(--dim);font-size:.82rem}
+.typegrid{display:grid;grid-template-columns:repeat(4,1fr);gap:.6rem;margin-top:.5rem}
+@media(max-width:560px){.typegrid{grid-template-columns:repeat(2,1fr)}}
+button.type{appearance:none;font:inherit;cursor:pointer;background:var(--bg);
+  border:1.5px solid var(--line);border-radius:12px;padding:.55rem .3rem .5rem;color:var(--dim);
+  display:flex;flex-direction:column;align-items:center;gap:.15rem;transition:border-color .12s,background .12s}
+button.type svg{width:100%;max-width:104px;height:auto;display:block}
+button.type span{font-size:.82rem;font-weight:600}
+button.type .cs{font-size:.7rem;font-weight:600;color:var(--blue);letter-spacing:.02em}
+button.type:hover{border-color:var(--faint)}
+button.type.sel{border-color:var(--blue);background:rgba(129,213,204,.08);color:var(--text)}
+button.go{display:block;width:100%;margin-top:1.25rem;padding:.95rem;font-size:1.1rem;
+  border-radius:12px}
+#results{margin-top:1.6rem}
+.rhead{font-size:.95rem;color:var(--dim);margin:0 0 .7rem;text-align:center}
+.state{background:var(--panel);border:1px solid var(--line);border-radius:14px;
+  padding:1.5rem 1.2rem;text-align:center;color:var(--dim)}
+.state b{color:var(--text)}
+.spin{display:inline-block;width:22px;height:22px;border:3px solid var(--line);
+  border-top-color:var(--accent);border-radius:50%;animation:sp 1s linear infinite;
+  vertical-align:-5px;margin-right:.6rem}
+@keyframes sp{to{transform:rotate(360deg)}}
+.flight{display:flex;align-items:stretch;background:var(--panel);border:1px solid var(--line);
+  border-radius:14px;overflow:hidden;margin-bottom:.8rem}
+.flight .bar{width:6px;flex:none}
+.flight .body{flex:1;padding:.85rem 1rem;display:flex;align-items:center;gap:1rem;flex-wrap:wrap}
+.flight .who{flex:1;min-width:11rem}
+.flight .reg{font-size:1.15rem;font-weight:700;letter-spacing:.01em}
+.flight .cn{display:inline-block;margin-left:.45rem;padding:.05rem .5rem;font-size:.8rem;
+  font-weight:700;color:var(--bg);background:var(--dim);border-radius:99px;vertical-align:2px}
+.flight .meta{color:var(--dim);font-size:.9rem;margin-top:.15rem}
+.flight .meta b{color:var(--text);font-weight:600}
+.flight .acts{flex:none;align-self:center;display:flex;flex-direction:column;gap:.45rem}
+.flight .acts a{white-space:nowrap;text-align:center}
+@media(max-width:430px){
+  .flight .body{gap:.6rem}
+  .flight .acts{width:100%}
+}
+</style></head>
+<body class="of-body"><div class="of-wrap narrow">
+__NAV__
+__HEADER__
+
+<form id="finder" class="panel" autocomplete="off">
+  <div class="fields">
+    <label class="f">Which day did you fly?
+      <span class="hint">we keep about the last week</span>
+      <input type="date" id="fdate" required>
+    </label>
+    <label class="f">Roughly when did you take off?
+      <span class="hint">local time - a guess is fine</span>
+      <input type="time" id="ftime" required>
+    </label>
+  </div>
+  <fieldset class="types">
+    <legend>Which glider were you in?<span class="hint">optional - trial flights are always in a two-seat glider</span></legend>
+    <div class="typegrid">
+      <button type="button" class="type" data-type="k21" aria-pressed="false" title="Schleicher ASK-21">
+        <svg viewBox="0 0 200 92" aria-hidden="true">
+          <path d="M88 45 Q140 34 184 25 Q189 24 188 28 Q142 40 90 52 Z" fill="#93a4ba"/>
+          <path d="M14 55 Q26 44 52 42 L120 45 Q148 46 164 44 L165 50 Q148 53 120 53 L52 55 Q30 58 14 55 Z" fill="#dbe4ee"/>
+          <path d="M14 55 Q17 48 24 45 L23 56 Q17 57 14 55 Z" fill="#d94f3d"/>
+          <path d="M42 43 Q52 35 66 37 Q75 39 79 44 Z" fill="#8fc1ee"/>
+          <path d="M154 45 L165 20 L172 20 L166 46 Z" fill="#dbe4ee"/>
+          <path d="M158 20 L184 17 L183 23 L158 25 Z" fill="#b9c6d6"/>
+          <ellipse cx="64" cy="80" rx="36" ry="4" fill="#000" opacity=".25"/>
+        </svg>
+        <span>K21</span>
+        <small class="cs">KFY &middot; HTV</small>
+      </button>
+      <button type="button" class="type" data-type="perkoz" aria-pressed="false" title="SZD-54 Perkoz">
+        <svg viewBox="0 0 200 92" aria-hidden="true">
+          <path d="M88 45 Q138 34 180 26 Q185 25 184 29 Q140 40 90 52 Z" fill="#93a4ba"/>
+          <path d="M180 26 L185 13 L189 14 L184 28 Z" fill="#93a4ba"/>
+          <path d="M14 55 Q26 44 52 42 L120 45 Q148 46 164 44 L165 50 Q148 53 120 53 L52 55 Q30 58 14 55 Z" fill="#dbe4ee"/>
+          <path d="M24 50 Q70 47.5 122 48.5 L122 51.5 Q70 51 25 53 Z" fill="#5a9fd6"/>
+          <path d="M42 43 Q52 35 66 37 Q75 39 79 44 Z" fill="#8fc1ee"/>
+          <path d="M154 45 L165 20 L172 20 L166 46 Z" fill="#dbe4ee"/>
+          <path d="M158 20 L184 17 L183 23 L158 25 Z" fill="#b9c6d6"/>
+          <ellipse cx="64" cy="80" rx="36" ry="4" fill="#000" opacity=".25"/>
+        </svg>
+        <span>Perkoz</span>
+        <small class="cs">PZ</small>
+      </button>
+      <button type="button" class="type" data-type="puchacz" aria-pressed="false" title="SZD-50 Puchacz">
+        <svg viewBox="0 0 200 92" aria-hidden="true">
+          <path d="M88 45 Q140 34 184 25 Q189 24 188 28 Q142 40 90 52 Z" fill="#93a4ba"/>
+          <path d="M14 55 Q26 44 52 42 L120 45 Q148 46 164 44 L165 50 Q148 53 120 53 L52 55 Q30 58 14 55 Z" fill="#dbe4ee"/>
+          <path d="M14 55 Q19 46 28 44 L27 56 Q19 57 14 55 Z" fill="#d94f3d"/>
+          <path d="M40 43 Q51 33 68 35 Q78 38 82 44 Z" fill="#8fc1ee"/>
+          <path d="M154 45 L165 20 L172 20 L166 46 Z" fill="#d94f3d"/>
+          <path d="M158 20 L184 17 L183 23 L158 25 Z" fill="#b9c6d6"/>
+          <ellipse cx="64" cy="80" rx="36" ry="4" fill="#000" opacity=".25"/>
+        </svg>
+        <span>Puchacz</span>
+        <small class="cs">JEC</small>
+      </button>
+      <button type="button" class="type sel" data-type="" aria-pressed="true">
+        <svg viewBox="0 0 200 92" aria-hidden="true">
+          <circle cx="100" cy="42" r="27" fill="none" stroke="#93a4ba" stroke-width="4"/>
+          <text x="100" y="53" text-anchor="middle" font-size="34" font-weight="700"
+                fill="#93a4ba" font-family="system-ui,sans-serif">?</text>
+        </svg>
+        <span>Not sure</span>
+      </button>
+    </div>
+  </fieldset>
+  <button type="submit" class="of-btn-primary go">Find my flight</button>
+</form>
+
+<section id="results" aria-live="polite"></section>
+
+<p class="of-foot">We only ever know the aircraft, never who was on board - nothing personal
+is stored. Flights from roughly the last week are available.<br>
+<a href="/">ognflights home</a> &middot; data from the Open Glider Network</p>
+</div>
+<script>
+"use strict";
+const DATA_BASE="__DATABASE__";
+// CANDL: the server rendering this page has the flight DB, so /download works. A static
+// host (the public CDN replay pipeline) sets this false and the button is simply omitted.
+const CANDL=__CANDL__;
+// Matching window (seconds). A visitor's remembered time is rough, so be forgiving:
+// a flight matches if it was airborne anywhere in [entered-5min, entered+20min], or if
+// its take-off is within 15 minutes either side. Results sort by take-off closeness.
+const BACK_S=5*60, FWD_S=20*60, TOL_S=15*60;
+const MIN_DUR_S=120;   // hide sub-2-minute segments (coverage blips, not real flights)
+// Trial-fleet type matching. The published legend carries the OGN device-database model
+// string per aircraft (legend[].type, e.g. "ASK-21", "SZD-50 Puchacz", "SZD-54 Perkoz");
+// these forgiving patterns map each chooser card onto it, case-insensitive, tolerant of
+// "ASK 21" / "K-21" style variants. Tug flights (mk "dr400") are never shown at all:
+// a trial-flight passenger is always in a two-seat glider, never the tug.
+const TYPE_PATTERNS={
+  k21:/ask[\s-]?21|(^|[^a-z])k[\s-]?21/i,
+  perkoz:/szd[\s-]?54|perkoz/i,
+  puchacz:/szd[\s-]?50|puchacz/i};
+function typeName(a){
+  const s=(a&&a.type)||"";
+  if(TYPE_PATTERNS.k21.test(s))return "K21 two-seat glider";
+  if(TYPE_PATTERNS.perkoz.test(s))return "Perkoz two-seat glider";
+  if(TYPE_PATTERNS.puchacz.test(s))return "Puchacz two-seat glider";
+  return s||"Glider";
+}
+
+const results=document.getElementById("results");
+const dateEl=document.getElementById("fdate");
+const timeEl=document.getElementById("ftime");
+let chosenType="";
+const dayCache={};   // day string -> parsed JSON (or null after a 404)
+
+// default the date to today (local) and cap it there; the past cap comes from the manifest.
+function localISO(d){
+  return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0");
+}
+dateEl.value=localISO(new Date());
+dateEl.max=dateEl.value;
+fetch(DATA_BASE+"manifest.json",{cache:"no-cache"}).then(r=>r.ok?r.json():null).then(m=>{
+  if(!m||!m.days||!m.days.length) return;
+  const days=m.days.map(d=>typeof d==="string"?d:d.day).sort();
+  dateEl.min=days[0];
+}).catch(()=>{});
+
+// glider / aeroplane / not-sure cards behave as a radio group
+document.querySelectorAll("button.type").forEach(b=>b.addEventListener("click",()=>{
+  chosenType=b.dataset.type;
+  document.querySelectorAll("button.type").forEach(o=>{
+    const on=o===b;
+    o.classList.toggle("sel",on);
+    o.setAttribute("aria-pressed",on?"true":"false");
+  });
+}));
+
+function esc(s){return String(s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));}
+function fmtTime(epoch){
+  return new Date(epoch*1000).toLocaleTimeString("en-GB",{hour:"2-digit",minute:"2-digit"});
+}
+function fmtDur(s){
+  const m=Math.round(s/60);
+  return m>=60?Math.floor(m/60)+" h "+(m%60)+" min":m+" min";
+}
+function regAndCn(label){
+  const m=/^([^\[]+?)\s*(?:\[([^\]]+)\])?$/.exec(label||"");
+  return m?{reg:m[1].trim(),cn:(m[2]||"").trim()}:{reg:label||"",cn:""};
+}
+
+function showState(html){results.innerHTML='<div class="state">'+html+"</div>";}
+
+async function loadDay(day){
+  if(day in dayCache) return dayCache[day];
+  let data=null;
+  const r=await fetch(DATA_BASE+day+".json",{cache:"no-cache"});
+  if(r.ok) data=await r.json();
+  else if(r.status!==404) throw new Error("HTTP "+r.status);
+  dayCache[day]=data;
+  return data;
+}
+
+function matchFlights(data,t,type){
+  const legend=data.legend||[];
+  // Days published before the legend carried model strings have no .type anywhere;
+  // for those, quietly skip the type filter rather than matching nothing.
+  const hasTypes=legend.some(a=>a&&a.type);
+  const out=[];
+  for(const f of data.flights||[]){
+    if(!f.samples||f.samples.length<2) continue;
+    if(f.mk==="dr400") continue;   // the tug: trial flights are always in a glider
+    const s=Date.parse(f.samples[0][0])/1000;
+    const e=Date.parse(f.samples[f.samples.length-1][0])/1000;
+    if(!(e-s>=MIN_DUR_S)) continue;
+    if(type&&hasTypes){
+      const ts=(legend[f.ai]||{}).type||"";
+      if(!TYPE_PATTERNS[type]||!TYPE_PATTERNS[type].test(ts)) continue;
+    }
+    const airborneNearby=(s<=t+FWD_S)&&(e>=t-BACK_S);
+    const takeoffClose=Math.abs(s-t)<=TOL_S;
+    if(airborneNearby||takeoffClose) out.push({f:f,s:s,e:e,d:Math.abs(s-t)});
+  }
+  out.sort((a,b)=>a.d-b.d);
+  return out;
+}
+
+function card(day,legend,m){
+  const a=legend[m.f.ai]||{};
+  const rc=regAndCn(a.label);
+  const ident="day="+encodeURIComponent(day)
+    +"&address="+encodeURIComponent(a.key||"")
+    +"&t="+Math.round(m.s);
+  const href="/replay?"+ident;
+  // same day/address/t identifier drives the server-side KML export (only when this page
+  // is served next to the DB - see CANDL).
+  const dl=CANDL?'<a class="of-btn-secondary" href="/download?'+ident+'&fmt=kml">Download for Google Earth</a>':"";
+  return '<div class="flight"><div class="bar" style="background:'+esc(m.f.color||"#81d5cc")+'"></div>'
+    +'<div class="body"><div class="who">'
+    +'<div class="reg">'+esc(rc.reg)+(rc.cn?'<span class="cn">'+esc(rc.cn)+"</span>":"")+"</div>"
+    +'<div class="meta">'+esc(typeName(a))
+    +' &middot; took off at <b>'+fmtTime(m.s)+"</b>"
+    +' &middot; <b>'+fmtDur(m.e-m.s)+"</b> in the air</div>"
+    +"</div>"
+    +'<div class="acts"><a class="of-btn-primary watch" href="'+href+'">Watch this flight &rarr;</a>'
+    +dl+"</div>"
+    +"</div></div>";
+}
+
+async function find(){
+  const day=dateEl.value, tm=timeEl.value;
+  if(!day||!tm) return;
+  showState('<span class="spin"></span>Looking up that day&rsquo;s flights&hellip;');
+  // the entered time is LOCAL (what the visitor remembers); flight samples are UTC.
+  const t=new Date(day+"T"+tm).getTime()/1000;
+  let data;
+  try{ data=await loadDay(day); }
+  catch(err){
+    showState("Sorry, we couldn&rsquo;t load the flight data just now. Please try again in a minute.");
+    return;
+  }
+  if(!data){
+    showState("<b>That day isn&rsquo;t available.</b><br>We keep roughly the last week of flying - "
+      +"today&rsquo;s flights usually appear by the evening.");
+    return;
+  }
+  const ms=matchFlights(data,t,chosenType);
+  if(!ms.length){
+    showState("<b>No flights found around then.</b><br>Try nudging the time by half an hour, "
+      +"picking a different day, or choosing &ldquo;Not sure&rdquo; for the aircraft type.");
+    return;
+  }
+  const noun=ms.length===1?"One flight was":ms.length+" flights were";
+  results.innerHTML='<p class="rhead">'+noun+" in the air around "+esc(tm)
+    +" - tap yours to watch it.</p>"+ms.map(m=>card(day,data.legend,m)).join("");
+}
+
+document.getElementById("finder").addEventListener("submit",e=>{e.preventDefault();find();});
+
+// shareable/prefill links: /my-flights?date=YYYY-MM-DD&time=HH:MM&type=glider runs the search
+(function(){
+  const p=new URLSearchParams(location.search);
+  const d=p.get("date"),tm=p.get("time"),ty=p.get("type");
+  if(ty!==null){
+    const b=document.querySelector('button.type[data-type="'+ty.replace(/[^a-z0-9]/g,"")+'"]');
+    if(b) b.click();
+  }
+  if(d&&/^\d{4}-\d{2}-\d{2}$/.test(d)) dateEl.value=d;
+  if(tm&&/^\d{2}:\d{2}$/.test(tm)) timeEl.value=tm;
+  if(d&&tm) find();
+})();
+</script></body></html>"""
+
+
+def _mine_page(data_dir: str) -> str:
+    header = header_html(
+        "Watch your flight",
+        "Took a trial flight at Gransden? Find it below and watch it back in 3D. "
+        "You can also download the trace and open it in Google Earth to explore your flight. "
+        "All you need is the day and a rough take-off time.",
+        logo_url=_logo_url(data_dir), club_name=CLUB_NAME)
+    return (MINE_HTML.replace("__DATABASE__", MINE_DATA_BASE)
+            .replace("__THEMECSS__", THEME_CSS)
+            .replace("__CANDL__", "true" if data_dir else "false")
+            .replace("__NAV__", nav_html("/my-flights"))
+            .replace("__HEADER__", header))
 
 
 def _home_page(status: dict, data_dir: str) -> str:
@@ -996,6 +1429,8 @@ def _home_page(status: dict, data_dir: str) -> str:
         pass
 
     cards = [
+        {"href": "/my-flights", "title": "Watch your flight",
+         "desc": "Took a trial flight? Find it by date and rough take-off time, then watch it back in 3D."},
         {"href": "/live", "title": "Live",
          "desc": "Real-time 3D view of aircraft airborne right now."},
         {"href": "/live?demo=1", "title": "Tour mode",
@@ -1006,44 +1441,76 @@ def _home_page(status: dict, data_dir: str) -> str:
          "desc": "Collector health and today's capture statistics."},
     ]
     card_html = "".join(
-        f'<a class="card" href="{c["href"]}"><h2>{c["title"]}</h2>'
+        f'<a class="of-card card" href="{c["href"]}"><h2>{c["title"]}</h2>'
         f'<p>{c["desc"]}</p></a>'
         for c in cards)
 
-    noun = "aircraft airborne now"
+    header = header_html(
+        "ognflights",
+        "Glider tracking for Gransden Lodge (Cambridge Gliding Centre).",
+        logo_url=_logo_url(data_dir), club_name=CLUB_NAME)
+
     status_html = (
-        f'<div class="strip"><a href="/live"><b>{airborne}</b> {noun}</a>'
+        f'<div class="strip"><a href="/live"><b>{airborne}</b> aircraft airborne now</a>'
         f'<span class="sep">|</span>'
         f'<a href="/replay"><b>{flights_today}</b> flights today</a></div>')
 
-    return f"""<!DOCTYPE html><html><head><meta charset="utf-8">
+    # first-timer help: two compact how-to cards under the action grid.
+    help_html = """
+<div class="help">
+  <div class="of-card helpcard">
+    <h2>Moving around the 3D view</h2>
+    <p class="sub">Works the same on the Live view and the Daily replay.</p>
+    <ul>
+      <li><b>Left-click and drag</b> to pan and spin the view around.</li>
+      <li><b>Scroll the mouse wheel</b> to zoom in and out. <b>Right-click and drag</b>
+          up or down also zooms, or pinch on a trackpad.</li>
+      <li><b>Hold Ctrl and left-click and drag</b> (or <b>middle-click and drag</b>)
+          to tilt the camera and look around the aircraft.</li>
+    </ul>
+  </div>
+  <div class="of-card helpcard">
+    <h2>Open your flight in Google Earth</h2>
+    <p class="sub">Take your flight home as a 3D track you can explore.</p>
+    <ul>
+      <li>Install the free <b>Google Earth Pro</b> desktop app for Windows or Mac from
+          google.com/earth, or use Google Earth on the web at earth.google.com.</li>
+      <li>Click <b>Download for Google Earth</b> on your flight to save the .kml file.</li>
+      <li>In the desktop app choose <b>File &gt; Open</b> and pick the .kml. On the web
+          choose <b>New project &gt; Import KML file from computer</b>.</li>
+      <li>Your flight path appears as a 3D track line. <b>Double-click</b> it to fly to it,
+          then tilt and zoom around it with the same mouse controls as above.</li>
+    </ul>
+  </div>
+</div>"""
+
+    return f"""<!DOCTYPE html><html lang="en-GB"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>ognflights - Gransden</title>
-<style>
-:root{{color-scheme:dark}}
-body{{font:16px/1.5 system-ui,sans-serif;margin:0;background:#0d1117;color:#e6edf3;
-min-height:100vh;display:flex;flex-direction:column;align-items:center}}
-.wrap{{max-width:760px;width:100%;padding:2.5rem 1.25rem 3rem;box-sizing:border-box}}
-h1{{font-size:1.7rem;margin:.2rem 0 .1rem}}
-.sub{{color:#8b949e;margin:0 0 1.4rem}}
-.strip{{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:.7rem 1rem;
-margin-bottom:1.6rem;font-size:.95rem}}
-.strip a{{color:#e6edf3;text-decoration:none}} .strip b{{color:#58a6ff}}
-.strip .sep{{color:#30363d;margin:0 .8rem}}
+<style>{THEME_CSS}
+.strip{{background:var(--panel);border:1px solid var(--line);border-radius:999px;
+padding:.6rem 1.3rem;margin:0 auto 1.6rem;font-size:.95rem;width:max-content;max-width:100%}}
+.strip a{{color:var(--text);text-decoration:none}} .strip a:hover{{color:var(--blue)}}
+.strip b{{color:var(--accent)}}
+.strip .sep{{color:var(--line);margin:0 .8rem}}
 .grid{{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:1rem}}
-.card{{display:block;background:#161b22;border:1px solid #30363d;border-radius:10px;
-padding:1.1rem 1.2rem;text-decoration:none;color:inherit;transition:border-color .15s,background .15s}}
-.card:hover{{border-color:#58a6ff;background:#1b222b}}
-.card h2{{font-size:1.15rem;margin:0 0 .35rem;color:#58a6ff}}
-.card p{{margin:0;color:#8b949e;font-size:.92rem}}
-.foot{{color:#484f58;font-size:.8rem;margin-top:2rem}}
+.card h2{{font-size:1.1rem;margin:0 0 .35rem;color:var(--text)}}
+.card p{{margin:0;color:var(--dim);font-size:.92rem}}
+.help{{display:grid;grid-template-columns:repeat(auto-fit,minmax(290px,1fr));gap:1rem;
+margin-top:1.4rem;align-items:start}}
+.helpcard h2{{font-size:1.05rem;margin:0 0 .2rem;color:var(--text)}}
+.helpcard .sub{{margin:0 0 .6rem;color:var(--faint);font-size:.85rem}}
+.helpcard ul{{margin:0;padding-left:1.15rem;color:var(--dim);font-size:.9rem}}
+.helpcard li{{margin:.4rem 0}}
+.helpcard b{{color:var(--blue);font-weight:600}}
 </style></head>
-<body><div class="wrap">
-<h1>ognflights</h1>
-<p class="sub">Glider tracking for Gransden Lodge (Cambridge Gliding Centre).</p>
+<body class="of-body"><div class="of-wrap">
+{nav_html("/")}
+{header}
 {status_html}
 <div class="grid">{card_html}</div>
-<p class="foot">Data from the Open Glider Network. Times are UTC.</p>
+{help_html}
+<p class="of-foot">Data from the Open Glider Network. Times are UTC.</p>
 </div></body></html>"""
 
 
@@ -1074,10 +1541,140 @@ def _stats(status: dict, data_dir: str) -> dict:
     out["uptime_s"] = int(now - status["started"]) if status.get("started") else 0
     lb = status.get("last_beacon")
     out["last_beacon_age_s"] = int(now - lb) if lb else None
-    # healthy = connected and heard a beacon within the last 5 min
-    out["healthy"] = bool(out["connected"] and lb and (now - lb) < 300)
+    ll = status.get("last_line")
+    out["last_line_age_s"] = int(now - ll) if ll else None
+    out["publish"] = status.get("publish", {"enabled": False})
+    out["data_dir"] = data_dir
+    out["_now"] = now
     out["days"] = _days_with_flights(data_dir)
     return out
+
+
+# --- component health: judge each subsystem independently -------------------------------
+LINK_STALE_S = 120       # no line from APRS-IS for this long => backend link unhealthy
+TRAFFIC_QUIET_S = 300    # informational: "quiet" once no aircraft beacon for this long
+
+_STATE_RANK = {"info": 0, "ok": 1, "warn": 2, "bad": 3}
+_STATE_COLOR = {"ok": "var(--ok)", "warn": "var(--warn)",
+                "bad": "var(--bad)", "info": "var(--faint)"}
+
+
+def _health_components(st: dict) -> list:
+    """Break the collector's state into independent, individually-judged components.
+
+    Each is {name, state, detail}. state is ok/warn/bad, or `info` for signals that
+    are reported but never mark the system unhealthy (a quiet sky is normal, not a
+    fault). Overall health = no component is `bad`.
+    """
+    comps = []
+
+    # The dashboard itself: if this code is running, the web server answered.
+    comps.append({"name": "Dashboard", "state": "ok", "detail": "web server responding"})
+
+    # Link to the OGN backend (APRS-IS). Proven live by ANY line incl. keepalives, so it
+    # is independent of whether aircraft happen to be flying.
+    ll = st["last_line_age_s"]
+    if st["connected"] and ll is not None and ll < LINK_STALE_S:
+        comps.append({"name": "OGN backend link", "state": "ok",
+                      "detail": f"connected to APRS-IS, last data {ll}s ago"})
+    else:
+        if not st["connected"]:
+            detail = "not connected to APRS-IS"
+        elif ll is None:
+            detail = "connected, but no data received yet"
+        else:
+            detail = f"no data from APRS-IS for {ll}s (link may be down)"
+        comps.append({"name": "OGN backend link", "state": "bad", "detail": detail})
+
+    # Aircraft traffic in range: informational. A quiet sky is expected, not a fault.
+    ba = st["last_beacon_age_s"]
+    foll = st["following"]
+    if ba is None:
+        detail = "quiet - no aircraft in range"
+    elif ba < TRAFFIC_QUIET_S or foll:
+        detail = f"{foll} following, last beacon {ba}s ago"
+    else:
+        detail = f"quiet - last aircraft {ba}s ago"
+    comps.append({"name": "Aircraft in range", "state": "info", "detail": detail})
+
+    # Storage: can we persist fixes? The data dir must be writable.
+    if os.access(st["data_dir"], os.W_OK):
+        comps.append({"name": "Storage", "state": "ok",
+                      "detail": f"{st['db_bytes']/1_048_576:.1f} MB, writable"})
+    else:
+        comps.append({"name": "Storage", "state": "bad",
+                      "detail": f"data dir not writable: {st['data_dir']}"})
+
+    # Publish worker: auxiliary. A failure is a `warn` (capture is unaffected), not `bad`.
+    pub = st.get("publish", {"enabled": False})
+    if not pub.get("enabled"):
+        comps.append({"name": "Publish worker", "state": "info", "detail": "disabled"})
+    else:
+        interval = pub.get("interval_s", 3600)
+        ts = pub.get("ts")
+        if ts is None:
+            comps.append({"name": "Publish worker", "state": "ok",
+                          "detail": "enabled, first run pending"})
+        else:
+            age = int(st["_now"] - ts)
+            if not pub.get("ok"):
+                comps.append({"name": "Publish worker", "state": "warn",
+                              "detail": f"last run failed {age}s ago: {pub.get('error') or 'unknown'}"})
+            elif age > interval * 2:
+                comps.append({"name": "Publish worker", "state": "warn",
+                              "detail": f"last success {age}s ago (interval {interval}s)"})
+            else:
+                comps.append({"name": "Publish worker", "state": "ok",
+                              "detail": f"last success {age}s ago"})
+    return comps
+
+
+def _overall_state(comps: list) -> str:
+    """Worst state across components (info never worse than ok)."""
+    worst = "ok"
+    for c in comps:
+        if _STATE_RANK[c["state"]] > _STATE_RANK[worst]:
+            worst = c["state"]
+    return worst
+
+
+def _health_headline(comps: list, overall: str) -> str:
+    """Short human summary for the status header."""
+    if overall == "bad":
+        bad = next(c for c in comps if c["state"] == "bad")
+        return bad["detail"] if bad["name"] == "OGN backend link" else f"{bad['name']}: {bad['detail']}"
+    traffic = next(c for c in comps if c["name"] == "Aircraft in range")
+    base = "Healthy - link up, no aircraft in range" if traffic["detail"].startswith("quiet") \
+        else "Healthy - capturing"
+    if overall == "warn":
+        warn = next(c for c in comps if c["state"] == "warn")
+        base += f" ({warn['name'].lower()} needs a look)"
+    return base
+
+
+def _healthz_payload(status: dict, data_dir: str):
+    """(http_code, json_str) for /healthz. 200 when nothing is `bad`, else 503."""
+    st = _stats(status, data_dir)
+    comps = _health_components(st)
+    ok = not any(c["state"] == "bad" for c in comps)
+    payload = {
+        "ok": ok,
+        "state": _overall_state(comps),
+        "day": st["day"],
+        "components": comps,
+        "metrics": {
+            "uptime_s": st["uptime_s"],
+            "connected": st["connected"],
+            "last_line_age_s": st["last_line_age_s"],
+            "last_beacon_age_s": st["last_beacon_age_s"],
+            "following": st["following"],
+            "fixes_today": st["fixes_today"],
+            "flights_today": st["flights_today"],
+            "stored_session": st["stored_session"],
+            "db_bytes": st["db_bytes"],
+        },
+    }
+    return (200 if ok else 503), json.dumps(payload)
 
 
 def _fmt_dur(s: int) -> str:
@@ -1085,14 +1682,23 @@ def _fmt_dur(s: int) -> str:
     return (f"{d}d " if d else "") + f"{h}h {m}m {s}s"
 
 
-def _stats_html(st: dict) -> str:
-    ok = st["healthy"]
-    dot = "#2ecc71" if ok else "#e74c3c"
-    age = "never" if st["last_beacon_age_s"] is None else f"{st['last_beacon_age_s']}s ago"
+def _stats_html(st: dict, data_dir: str = "") -> str:
+    comps = _health_components(st)
+    overall = _overall_state(comps)
+    dot = _STATE_COLOR[overall]
+    headline = _health_headline(comps, overall)
+
+    comp_rows = "".join(
+        f'<tr><td class="cdot"><span class="dot" style="background:{_STATE_COLOR[c["state"]]}"></span></td>'
+        f'<th>{c["name"]}</th><td>{c["detail"]}</td></tr>'
+        for c in comps)
+
+    beacon_age = "never" if st["last_beacon_age_s"] is None else f"{st['last_beacon_age_s']}s ago"
+    line_age = "never" if st["last_line_age_s"] is None else f"{st['last_line_age_s']}s ago"
     rows = [
-        ("Status", ("HEALTHY" if ok else "CHECK") + (" (connected)" if st["connected"] else " (disconnected)")),
         ("Uptime", _fmt_dur(st["uptime_s"])),
-        ("Last beacon", age),
+        ("Last data (any)", line_age),
+        ("Last aircraft beacon", beacon_age),
         ("Following now", st["following"]),
         ("Fixes today", f"{st['fixes_today']:,}"),
         ("Aircraft today", st["aircraft_today"]),
@@ -1102,21 +1708,51 @@ def _stats_html(st: dict) -> str:
     ]
     body = "".join(f"<tr><th>{k}</th><td>{v}</td></tr>" for k, v in rows)
     days = st.get("days", [])
-    daylinks = ("".join(f'<li><a href="/replay?day={d}">{d}</a></li>' for d in days)
-                if days else "<li class='hint'>none captured yet</li>")
-    return f"""<!DOCTYPE html><html><head><meta charset="utf-8">
+    daylinks = ("".join(f'<a class="chip" href="/replay?day={d}">{d}</a>' for d in days)
+                if days else '<span class="hint">none captured yet</span>')
+    header = header_html(
+        "Collector status",
+        f'<span class="dot" style="background:{dot}"></span>'
+        f'{headline} &middot; {st["day"]}',
+        logo_url=_logo_url(data_dir) if data_dir else "", club_name=CLUB_NAME)
+    return f"""<!DOCTYPE html><html lang="en-GB"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
 <meta http-equiv="refresh" content="10"><title>ognflights status</title>
-<style>body{{font:15px/1.6 system-ui,sans-serif;max-width:520px;margin:2.5rem auto;padding:0 1rem;color:#222}}
-h1{{font-size:1.3rem}} .dot{{display:inline-block;width:12px;height:12px;border-radius:50%;background:{dot};vertical-align:middle;margin-right:8px}}
-table{{border-collapse:collapse;width:100%;margin-top:1rem}} th,td{{text-align:left;padding:.4rem .6rem;border-bottom:1px solid #eee}}
-th{{color:#666;font-weight:600;width:45%}} a{{color:#1e6fd0}} .hint{{color:#999;font-size:.85rem}} ul{{columns:2;padding-left:1.1rem}}</style></head>
-<body><h1><span class="dot"></span>ognflights collector, {st['day']}</h1>
-<table>{body}</table>
-<p><a href="/">home</a> &middot; <a href="/replay">today's all-gliders replay &rarr;</a></p>
-<h2 style="font-size:1rem">Days with flights</h2>
-<ul>{daylinks}</ul>
-<p class="hint">auto-refreshes every 10s. "Following now" = aircraft launched from the field being tracked live.</p>
-</body></html>"""
+<style>{THEME_CSS}
+.dot{{display:inline-block;width:11px;height:11px;border-radius:50%;vertical-align:-1px;margin-right:6px}}
+table{{border-collapse:collapse;width:100%;font-size:.95rem}}
+th,td{{text-align:left;padding:.45rem .3rem;border-bottom:1px solid var(--line)}}
+tr:last-child th,tr:last-child td{{border-bottom:0}}
+th{{color:var(--dim);font-weight:600;width:45%}}
+table.comp th{{color:var(--text);width:38%}}
+table.comp td.cdot{{width:20px;padding-right:0}}
+table.comp td:last-child{{color:var(--dim)}}
+h2{{font-size:1rem;margin:1.6rem 0 .6rem;text-align:center}}
+.days{{text-align:center}}
+.chip{{display:inline-block;margin:0 .2rem .45rem;padding:.25rem .7rem;font-size:.85rem;
+background:var(--panel);border:1px solid var(--line);border-radius:999px;
+color:var(--blue);text-decoration:none;transition:border-color .15s}}
+.chip:hover{{border-color:var(--accent)}}
+.hint{{color:var(--faint);font-size:.85rem}}
+.actions{{text-align:center;margin-top:1rem}}
+.actions a{{color:var(--blue);text-decoration:none;margin:0 .6rem}}
+.actions a:hover{{text-decoration:underline}}
+</style></head>
+<body class="of-body"><div class="of-wrap narrow">
+{nav_html("/stats")}
+{header}
+<h2>Components</h2>
+<div class="of-card"><table class="comp">{comp_rows}</table></div>
+<h2>Capture details</h2>
+<div class="of-card"><table>{body}</table></div>
+<p class="actions"><a href="/live">watch live &rarr;</a><a href="/replay">today's replay &rarr;</a>
+<a href="/healthz">healthz &rarr;</a></p>
+<h2>Days with flights</h2>
+<div class="days">{daylinks}</div>
+<p class="of-foot">Auto-refreshes every 10 s. A quiet sky (no aircraft in range) is normal and
+does not mean anything is wrong. "Following now" = aircraft launched from the field
+being tracked live.</p>
+</div></body></html>"""
 
 
 def make_handler(status, data_dir, replay_script, models_dir, hub):
@@ -1124,11 +1760,13 @@ def make_handler(status, data_dir, replay_script, models_dir, hub):
         def log_message(self, *a):
             pass
 
-        def _send(self, code, body, ctype="text/html; charset=utf-8"):
+        def _send(self, code, body, ctype="text/html; charset=utf-8", extra=None):
             data = body.encode() if isinstance(body, str) else body
             self.send_response(code)
             self.send_header("Content-Type", ctype)
             self.send_header("Content-Length", str(len(data)))
+            for k, v in (extra or {}).items():
+                self.send_header(k, v)
             self.end_headers()
             if self.command != "HEAD":
                 self.wfile.write(data)
@@ -1142,24 +1780,85 @@ def make_handler(status, data_dir, replay_script, models_dir, hub):
         def _replay(self):
             q = urlparse(self.path).query
             day = _parse_day(q)
-            addr = parse_qs(q).get("address", [None])[0]
-            if addr and not re.match(r"^[A-Za-z0-9._-]+$", addr):
+            params = parse_qs(q)
+            addr = params.get("address", [None])[0]
+            if addr and not _ADDR_RE.match(addr):
                 addr = None
-            nav = _nav_html(day, addr)
+            # ?t= selects one flight client-side; echo it into the download link so the
+            # KML matches exactly what the visitor is watching.
+            tval = params.get("t", [None])[0]
+            if tval and not _T_RE.match(tval):
+                tval = None
             html = _render_replay(day, replay_script, data_dir, addr)
+            # the no-flights fallback has no help overlay, so no reopen "?" button there
+            nav = _nav_html(day, addr, _logo_url(data_dir), t=tval,
+                            help_btn=html is not None)
             if html is None:
                 label = "today" if day.date() == _today().date() else day.strftime("%Y-%m-%d")
                 what = f"{addr} on {label}" if addr else label
+                # standalone fallback page, so it needs the theme CSS inlined itself
                 self._send(200, "<!DOCTYPE html><meta charset=utf-8>"
-                           "<body style='font:15px system-ui;margin:0;color:#eee;background:#111'>"
-                           + nav +
-                           "<div style='margin:6rem auto;max-width:32rem;text-align:center'>"
-                           f"<h1>No flights stored for {what}.</h1>"
-                           "<p>Pick another day above, or <a style='color:#8cf' href='/stats'>see status &rarr;</a>, "
-                           "or <a style='color:#8cf' href='/'>home &rarr;</a></p>"
+                           '<meta name="viewport" content="width=device-width,initial-scale=1">'
+                           f"<style>{THEME_CSS}</style>"
+                           "<body class='of-body'>" + nav +
+                           "<div style='margin:7rem auto;max-width:32rem;text-align:center;padding:0 1rem'>"
+                           f"<h1 style='font-size:1.4rem'>No flights stored for {what}.</h1>"
+                           "<p style='color:var(--dim)'>Pick another day above, or "
+                           "<a style='color:var(--blue)' href='/stats'>see status &rarr;</a> or "
+                           "<a style='color:var(--blue)' href='/'>home &rarr;</a></p>"
                            "</div></body>")
             else:
                 self._send(200, html.replace("</body>", nav + "</body>", 1))
+
+        def _download(self):
+            """GET /download?day=YYYY-MM-DD&address=<hex>&t=<flight sel>&fmt=kml|gpx|igc
+
+            Serves ONE segmented flight as a file. Opens the year DB read-only (WAL-safe
+            against the live collector), segments that aircraft's day, picks the flight
+            the same way the replay's ?t= filter does, and streams it as an attachment.
+            Clean 400/404s on bad input; never a stack trace."""
+            plain = "text/plain; charset=utf-8"
+            try:
+                q = parse_qs(urlparse(self.path).query)
+                day_s = q.get("day", [""])[0]
+                addr = q.get("address", [""])[0]
+                fmt = (q.get("fmt", ["kml"])[0] or "kml").lower()
+                tval = q.get("t", [""])[0]
+                if not _DAY_RE.match(day_s):
+                    return self._send(400, "bad or missing ?day=YYYY-MM-DD", plain)
+                if not addr or not _ADDR_RE.match(addr):
+                    return self._send(400, "bad or missing ?address=<device id>", plain)
+                if fmt not in export.WRITERS:
+                    return self._send(400, "fmt must be one of: " + ", ".join(export.WRITERS), plain)
+                day = datetime.strptime(day_s, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+                try:
+                    t = _parse_t(tval, day)
+                except ValueError:
+                    return self._send(400, "bad ?t= (epoch seconds or HH:MM UTC)", plain)
+                yf = year_file(day.year, data_dir)
+                if not os.path.exists(yf):
+                    return self._send(404, f"no data stored for {day_s}", plain)
+                s = Store(yf, read_only=True)
+                try:
+                    lo, hi = s.day_bounds(day)
+                    flights = segment(addr, s.fixes_for(addr, lo, hi), GRANSDEN)
+                    label, model = s.device_label(addr)
+                finally:
+                    s.close()
+                if not flights:
+                    return self._send(404, f"no flights for {addr} on {day_s}", plain)
+                fl = _select_flight(flights, t)
+                if fl is None:
+                    return self._send(400, f"{label} flew {len(flights)} times on {day_s}: "
+                                      "add ?t=<epoch seconds or HH:MM UTC> to pick one", plain)
+                doc = export.WRITERS[fmt](fl, label, model)
+                fname = export.filename(fl, label, fmt)
+                self._send(200, doc, DL_CTYPES[fmt],
+                           extra={"Content-Disposition": f'attachment; filename="{fname}"'})
+            except (BrokenPipeError, ConnectionResetError):
+                raise
+            except Exception:
+                self._send(500, "sorry, that export failed", plain)
 
         def _stream(self):
             """Server-Sent Events: live fixes for followed aircraft, plus heartbeats."""
@@ -1196,14 +1895,32 @@ def make_handler(status, data_dir, replay_script, models_dir, hub):
         def do_GET(self):
             path = self.path.split("?", 1)[0]
             if path in ("/stats", "/status"):
-                self._send(200, _stats_html(_stats(status, data_dir)))
+                self._send(200, _stats_html(_stats(status, data_dir), data_dir))
+            elif path == "/healthz":
+                code, body = _healthz_payload(status, data_dir)
+                self._send(code, body, "application/json; charset=utf-8")
             elif path == "/live.json":
                 self._send(200, json.dumps(_live_feed(data_dir)),
                            "application/json; charset=utf-8")
             elif path == "/live.stream":
                 self._stream()
             elif path == "/live":
-                self._send(200, _live_page())
+                self._send(200, _live_page(data_dir))
+            elif path == "/my-flights":
+                self._send(200, _mine_page(data_dir))
+            elif path.startswith("/branding/"):
+                # club drop-in branding (e.g. logo.png) from the mounted data volume:
+                # <data_dir>/branding/<file>. Same sanitising pattern as /models/.
+                fn = os.path.basename(path)
+                ext = fn.rsplit(".", 1)[-1].lower() if "." in fn else ""
+                fp = os.path.join(data_dir, "branding", fn)
+                if ext in BRANDING_CTYPES and os.path.isfile(fp):
+                    with open(fp, "rb") as fh:
+                        self._send(200, fh.read(), BRANDING_CTYPES[ext])
+                else:
+                    self._send(404, "not found")
+            elif path == "/download":
+                self._download()
             elif path == "/calibrate":
                 self._send(200, _calibrate_page())
             elif path == "/replay":
