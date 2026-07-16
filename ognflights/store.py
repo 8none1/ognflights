@@ -13,6 +13,8 @@ CREATE TABLE IF NOT EXISTS fixes (
     speed_kt  INTEGER,
     climb_fpm INTEGER,
     receiver  TEXT,
+    course    INTEGER,                  -- heading, degrees 0-359 (from the APRS CSE field)
+    rot       REAL,                     -- rate of turn, half-turns/min (OGN `rot` field)
     PRIMARY KEY (address, ts)
 );
 CREATE INDEX IF NOT EXISTS idx_fixes_ts ON fixes(ts);
@@ -38,6 +40,8 @@ class Fix:
     alt_ft: float
     speed_kt: int | None
     climb_fpm: int | None
+    course: int | None = None    # heading, degrees; None on older rows / CGC backfill
+    rot: float | None = None     # rate of turn, half-turns/min; None when not reported
 
 
 class Store:
@@ -57,8 +61,22 @@ class Store:
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.execute("PRAGMA synchronous=NORMAL")
         self.db.executescript(SCHEMA)
+        self._migrate_fixes()
         self._dedup_fixes()
         self.db.commit()
+
+    def _migrate_fixes(self) -> None:
+        """Add columns introduced after a DB file was first created (idempotent).
+
+        CREATE TABLE IF NOT EXISTS never alters an existing table, so year files
+        made before a column existed need it added in place. ALTER ... ADD COLUMN
+        appends nullable columns cheaply (no row rewrite); safe to run every open.
+        """
+        cols = {r[1] for r in self.db.execute("PRAGMA table_info(fixes)").fetchall()}
+        if "course" not in cols:
+            self.db.execute("ALTER TABLE fixes ADD COLUMN course INTEGER")
+        if "rot" not in cols:
+            self.db.execute("ALTER TABLE fixes ADD COLUMN rot REAL")
 
     def _fixes_index_cols(self, name: str) -> list[str]:
         return [r[2] for r in self.db.execute(f"PRAGMA index_info({name})").fetchall()]
@@ -109,10 +127,16 @@ class Store:
         avoid re-publishing an already-seen fix to the live view.
         """
         before = self.db.total_changes
+        # Explicit column list (not positional VALUES) so it stays correct whether the
+        # course/rot columns sit where the fresh schema puts them or where ALTER appended
+        # them. getattr keeps the dormant CGC backfill record (no course/rot) working.
         self.db.execute(
-            "INSERT OR IGNORE INTO fixes VALUES (?,?,?,?,?,?,?,?)",
+            "INSERT OR IGNORE INTO fixes "
+            "(address, ts, lat, lon, alt_ft, speed_kt, climb_fpm, receiver, course, rot) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?)",
             (b.address, int(b.ts.timestamp()), b.lat, b.lon, b.altitude_ft,
-             b.speed_kt, b.climb_fpm, b.receiver),
+             b.speed_kt, b.climb_fpm, b.receiver,
+             getattr(b, "course", None), getattr(b, "turn_rate", None)),
         )
         return self.db.total_changes > before
 
@@ -155,7 +179,7 @@ class Store:
 
     def fixes_for(self, address: str, lo: int, hi: int) -> list[Fix]:
         rows = self.db.execute(
-            """SELECT address, ts, lat, lon, alt_ft, speed_kt, climb_fpm
+            """SELECT address, ts, lat, lon, alt_ft, speed_kt, climb_fpm, course, rot
                FROM fixes WHERE address = ? AND ts >= ? AND ts < ? ORDER BY ts""",
             (address, lo, hi),
         ).fetchall()

@@ -23,6 +23,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from ognflights.config import GRANSDEN, GROUND_AGL_FT, MIN_FLIGHT_PEAK_AGL_FT
 from ognflights.flights import Flight, segment
 from ognflights.store import Store, store_for_day
+from ognflights.theme import MAP_HELP_BTN, MAP_HELP_HTML, MAP_HELP_JS, THEME_CSS
 
 FT_TO_M = 0.3048
 GLIDERISH = {"glider", "tow", "motorglider"}
@@ -62,18 +63,20 @@ TEMPLATE = r"""<!DOCTYPE html>
 <html><head><meta charset="utf-8"><title>__TITLE__ replay</title>
 <script src="__CES__/Cesium.js"></script>
 <link href="__CES__/Widgets/widgets.css" rel="stylesheet">
-<style>html,body,#c{margin:0;padding:0;width:100%;height:100%;overflow:hidden}
-#legend{position:absolute;top:8px;left:8px;z-index:10;background:rgba(0,0,0,.6);color:#fff;
-font:12px sans-serif;padding:8px 10px;border-radius:6px;max-height:90vh;overflow:auto}
-#legend b{font-size:14px} .hint{opacity:.6;font-size:11px}
-.sw{display:inline-block;width:12px;height:12px;margin-right:6px;border-radius:2px;vertical-align:middle}
-#daypick{position:fixed;top:8px;left:50%;transform:translateX(-50%);z-index:20;
-background:rgba(0,0,0,.6);color:#fff;padding:5px 9px;border-radius:6px;font:13px sans-serif}
-#daypick select{font:13px sans-serif;background:#222;color:#fff;border:1px solid #555;border-radius:3px}
-#daypick a{color:#8cf;text-decoration:none}
+<style>__THEMECSS__
+html,body,#c{margin:0;padding:0;width:100%;height:100%;overflow:hidden;background:#000}
+#legend{position:absolute;top:10px;left:10px;z-index:10;color:var(--text);
+font:12px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif;padding:9px 11px;max-height:88vh;overflow:auto}
+@media(max-width:640px){#legend{top:72px;max-height:70vh}
+.cesium-viewer-toolbar{display:none}}
+#legend:empty{display:none}
+#legend b{font-size:14px} .hint{color:var(--dim);font-size:11px}
+#legend a{color:var(--blue)}
+.sw{display:inline-block;width:12px;height:12px;margin-right:6px;border-radius:3px;vertical-align:middle}
 #empty{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);z-index:15;display:none;
-background:rgba(0,0,0,.7);color:#fff;font:15px sans-serif;padding:14px 18px;border-radius:8px}</style>
-</head><body><div id="c"></div><div id="legend"></div>__DAYPICKER__<div id="empty">No flights recorded for this day.</div>
+font:15px system-ui,-apple-system,"Segoe UI",sans-serif;padding:14px 18px}</style>
+</head><body><div id="c"></div><div id="legend" class="of-panel"></div>__DAYPICKER__<div id="empty" class="of-panel">No flights recorded for this day.</div>
+__HELPHTML__
 <script>
 const INLINE_DATA=__PAYLOAD__;   // inlined DATA (inline mode) or null (external-data mode)
 const EXTERNAL=__EXTERNAL__;     // true = fetch DATA (and manifest, in public build) at runtime
@@ -82,7 +85,7 @@ const DAYPICKER=__DAYPICKER__;   // true = show the day-picker control and load 
 const HOME=__HOME__;
 const MYAW=__MYAW__;             // {modelKey: radians} yaw offset per model; tune with number keys + [ ]
 const TRAILMODE="__TRAILMODE__";
-const SPEEDCOL=__SPEEDCOL__;
+const COLOURMODE="__COLOURMODE__";   // initial trail colouring: "off" | "speed" | "climb"
 const SINGLELINK=__SINGLELINK__; // day string to link each aircraft to its single-aircraft view, or null
 const PATHRES=__PATHRES__;
 const TAILSECS=__TAILSECS__;  // sliding "tail" trail: seconds of track kept behind the aircraft
@@ -111,6 +114,13 @@ const SPD_LO=30, SPD_HI=110;   // knots mapped across the speed colour ramp
 function speedColor(kt){
   const t=Math.max(0,Math.min(1,(kt-SPD_LO)/(SPD_HI-SPD_LO)));
   const st=[[0.12,0.12,0.5],[0.0,0.8,0.5],[1.0,1.0,0.5]];  // dim blue -> green -> bright yellow
+  const seg=t*2, i=Math.min(1,Math.floor(seg)), f=seg-i, a=st[i], b=st[i+1]||st[i];
+  return new Cesium.Color(a[0]+(b[0]-a[0])*f, a[1]+(b[1]-a[1])*f, a[2]+(b[2]-a[2])*f, 0.95);
+}
+const CLB_LO=-6, CLB_HI=6;   // knots (sink..climb) across the climb colour ramp
+function climbColor(kt){
+  const t=Math.max(0,Math.min(1,(kt-CLB_LO)/(CLB_HI-CLB_LO)));
+  const st=[[0.15,0.45,1.0],[0.80,0.80,0.80],[1.0,0.28,0.10]];  // cold blue (sink) -> neutral -> hot red (climb)
   const seg=t*2, i=Math.min(1,Math.floor(seg)), f=seg-i, a=st[i], b=st[i+1]||st[i];
   return new Cesium.Color(a[0]+(b[0]-a[0])*f, a[1]+(b[1]-a[1])*f, a[2]+(b[2]-a[2])*f, 0.95);
 }
@@ -153,15 +163,15 @@ function fmtReadout(cs, ft, kt){
 }
 
 // --- per-day render state: everything built from a DATA dict, torn down on day change ---
-let trails=[], planes=[], speedPrims={};
+let trails=[], planes=[], colFlights=[];   // colFlights: per-flight progressive colour trail
 let aircraftOn=[], flightAi=[];
 
 function teardown(){
   // remove all entities + primitives added for the previous day so switching days leaks nothing
   planes.forEach(p=>viewer.entities.remove(p));
   trails.forEach(t=>viewer.entities.remove(t));
-  Object.keys(speedPrims).forEach(ai=>viewer.scene.primitives.remove(speedPrims[ai]));
-  trails=[]; planes=[]; speedPrims={};
+  colFlights.forEach(cf=>{ if(cf.prim) viewer.scene.primitives.remove(cf.prim); });
+  trails=[]; planes=[]; colFlights=[];
   aircraftOn=[]; flightAi=[];
   viewer.scene.requestRender();
 }
@@ -176,7 +186,6 @@ function renderData(DATA){
   }
   if(empty)empty.style.display="none";
   let tmin=null,tmax=null;
-  const speedInstances={};   // aircraft index -> [GeometryInstance]; batched into one primitive per aircraft
   DATA.flights.forEach(fl=>{
     const pos=new Cesium.SampledPositionProperty();
     fl.samples.forEach(s=>pos.addSample(Cesium.JulianDate.fromIso8601(s[0]),
@@ -234,28 +243,35 @@ function renderData(DATA){
     trails.push(viewer.entities.add({name:fl.name+" trail",
       polyline:{positions:Cesium.Cartesian3.fromDegreesArrayHeights(flat),
       width:1, material:col.withAlpha(0.35)}}));
-    (speedInstances[fl.ai]=speedInstances[fl.ai]||[]).push(new Cesium.GeometryInstance({geometry:new Cesium.PolylineGeometry({
-        positions:Cesium.Cartesian3.fromDegreesArrayHeights(flat), width:3,
-        vertexFormat:Cesium.PolylineColorAppearance.VERTEX_FORMAT,
-        colors:(fl.spd||[]).map(speedColor), colorsPerVertex:true, arcType:Cesium.ArcType.NONE})}));
-  });
-  // one batched speed-trail primitive per aircraft: draw calls drop from ~1/flight to ~1/aircraft,
-  // while still allowing per-aircraft show/hide.
-  Object.keys(speedInstances).forEach(ai=>{
-    speedPrims[ai]=viewer.scene.primitives.add(new Cesium.Primitive({
-      geometryInstances:speedInstances[ai],
-      appearance:new Cesium.PolylineColorAppearance({translucent:true}), show:false}));
+    // Colour trails are drawn PROGRESSIVELY (revealed up to the playback clock) by
+    // updateColourTrails(), so the coloured line is the single trail that grows behind the
+    // glider - no static full-track overlay and no second solid comet-path. Here we just
+    // precompute each flight's geometry, the per-vertex colours (speed + climb), and the
+    // sample times the reveal indexes into.
+    colFlights.push({
+      ai:fl.ai,
+      times:fl.samples.map(s=>Cesium.JulianDate.fromIso8601(s[0])),
+      pos:Cesium.Cartesian3.fromDegreesArrayHeights(flat),
+      spdCol:(fl.spd||[]).map(speedColor),
+      climbCol:(fl.climb||[]).map(climbColor),
+      prim:null, key:null});
   });
   const leg=[`<b>${DATA.title}</b><br><span class="hint">${DATA.flights.length} flights, ${DATA.legend.length} aircraft</span><br>`,
     `<div style="margin:4px 0;user-select:none">trails:
-      <label><input type="radio" name="tm" value="full"> full</label>
-      <label><input type="radio" name="tm" value="active"> active</label>
+      <label><input type="radio" name="tm" value="all"> all flights</label>
+      <label><input type="radio" name="tm" value="current"> current flight</label>
       <label><input type="radio" name="tm" value="tail"> tail</label>
       <label><input type="radio" name="tm" value="off"> off</label>
-      <label style="cursor:pointer;margin-left:8px"><input type="checkbox" id="speedcol"> by speed</label>
+      <span style="margin-left:8px">colour:</span>
+      <label><input type="radio" name="cm" value="off"> none</label>
+      <label><input type="radio" name="cm" value="speed"> speed</label>
+      <label><input type="radio" name="cm" value="climb"> climb</label>
       <div id="speedscale" style="display:none;margin:3px 0">
         <span style="display:inline-block;width:130px;height:9px;border-radius:2px;background:linear-gradient(90deg,#1f1f80,#00cc80,#ffff80)"></span>
         <br><span class="hint">slow ${SPD_LO} &rarr; ${SPD_HI} kt fast</span></div>
+      <div id="climbscale" style="display:none;margin:3px 0">
+        <span style="display:inline-block;width:130px;height:9px;border-radius:2px;background:linear-gradient(90deg,#2673ff,#cccccc,#ff481a)"></span>
+        <br><span class="hint">sink ${CLB_LO} &rarr; +${CLB_HI} kt climb</span></div>
       <br><label style="cursor:pointer"><input type="checkbox" id="placenames"> place names</label>
       <br><button id="resetview" style="cursor:pointer;margin-top:4px">reset view</button>
       <details id="settings" style="margin-top:6px">
@@ -268,17 +284,20 @@ function renderData(DATA){
           </label>
         </div>
       </details></div>`];
-  if(DATA.legend.length>1) leg.push(`<div class="hint" style="margin-top:4px">show: <a href="#" id="acAll" style="color:#8cf">all</a> / <a href="#" id="acNone" style="color:#8cf">none</a></div>`);
-  DATA.legend.forEach((a,i)=>leg.push(`<div style="display:block"><label style="cursor:pointer"><input type="checkbox" class="acft" data-ai="${i}" checked> <span class="sw" style="background:${a.color}"></span>${a.label} (${a.n})</label>${SINGLELINK&&a.key?` <a href="#" class="single" data-key="${encodeURIComponent(a.key)}" style="color:#8cf;font-size:11px">single &rarr;</a>`:""}</div>`));
+  if(DATA.legend.length>1) leg.push(`<div class="hint" style="margin-top:4px">show: <a href="#" id="acAll">all</a> / <a href="#" id="acNone">none</a></div>`);
+  DATA.legend.forEach((a,i)=>leg.push(`<div style="display:block"><label style="cursor:pointer"><input type="checkbox" class="acft" data-ai="${i}" checked> <span class="sw" style="background:${a.color}"></span>${a.label} (${a.n})</label>${SINGLELINK&&a.key?` <a href="#" class="single" data-key="${encodeURIComponent(a.key)}" style="font-size:11px">single &rarr;</a>`:""}</div>`));
   leg.push(`<div id="models" class="hint" style="margin-top:6px"></div>`);
-  leg.push(`<div class="hint" style="margin-top:6px">3D models: <a style="color:#8cf" href="https://github.com/Ysurac/FlightAirMap-3dmodels">FlightAirMap</a> (GPLv2)</div>`);
+  leg.push(`<div class="hint" style="margin-top:6px">3D models: <a href="https://github.com/Ysurac/FlightAirMap-3dmodels">FlightAirMap</a> (GPLv2)</div>`);
   document.getElementById("legend").innerHTML=leg.join("");
 
   // per-aircraft visibility (index matches DATA.legend); each flight knows its aircraft via fl.ai
   aircraftOn=DATA.legend.map(()=>true);
   flightAi=DATA.flights.map(f=>f.ai);
-  // trail modes: full = whole track; active = flown tail of airborne gliders; off = none.
-  // "by speed" recolours the full track (slow=dim blue, fast=bright yellow); active tail stays per-aircraft.
+  // trail modes: all = every flight that day (accumulates as the day plays); current = only the
+  // flight in progress at the playback time (hidden once it lands); tail = sliding window behind
+  // the current flight; off = none. colour "speed"/"climb" replaces the trail with a single
+  // progressive coloured line that draws as the glider flies (speed: slow blue->fast yellow;
+  // climb: sink blue->climb red); "off" keeps the per-aircraft solid trail.
   document.querySelectorAll('input.acft').forEach(cb=>cb.addEventListener("change",e=>{
     aircraftOn[+e.target.dataset.ai]=e.target.checked; applyTrails();
   }));
@@ -292,12 +311,9 @@ function renderData(DATA){
     document.querySelector('input[name=tm][value="tail"]').checked=true;
     applyTrails();
   });
-  document.getElementById("speedcol").addEventListener("change",function(){
-    if(this.checked) document.querySelector('input[name=tm][value="full"]').checked=true;  // speed colours the full track
-    applyTrails();
-  });
+  document.querySelectorAll('input[name=cm]').forEach(r=>r.addEventListener("change",applyTrails));
   document.querySelector('input[name=tm][value="'+TRAILMODE+'"]').checked=true;
-  document.getElementById("speedcol").checked=SPEEDCOL;
+  document.querySelector('input[name=cm][value="'+COLOURMODE+'"]').checked=true;
   applyTrails();
   document.getElementById("nightsky").addEventListener("change",e=>setNight(e.target.checked));
   setNight(true);
@@ -330,16 +346,81 @@ function renderData(DATA){
 
 function applyTrails(){
   const m=document.querySelector('input[name=tm]:checked').value;
-  const speed=document.getElementById("speedcol").checked;
+  const cm=document.querySelector('input[name=cm]:checked').value;   // off | speed | climb
+  const coloured=cm!=="off";
+  // Colour on: the single progressive coloured trail (updateColourTrails) IS the trail, so
+  // hide the solid comet-path and the static per-aircraft line to avoid a double trail.
   // "tail" = short sliding window behind the aircraft; "active"/"full" = whole flown tail.
-  planes.forEach((p,i)=>{const on=aircraftOn[flightAi[i]]; p.show=on; p.path.show=on && m!=="off";
+  planes.forEach((p,i)=>{const on=aircraftOn[flightAi[i]]; p.show=on;
+    p.path.show=on && m!=="off" && !coloured;
     p.path.trailTime=(m==="tail")?tailSecs:100000;
     if(p.label) p.label.show=readoutsOn;});   // entity.show already gates a hidden aircraft's label
-  trails.forEach((t,i)=>{t.show=aircraftOn[flightAi[i]] && m==="full" && !speed;});
-  Object.keys(speedPrims).forEach(ai=>{speedPrims[ai].show=aircraftOn[+ai] && m==="full" && speed;});
-  document.getElementById("speedscale").style.display=(m==="full"&&speed)?"block":"none";
-  viewer.scene.requestRender();   // requestRenderMode is on, so ask for a redraw after toggling
+  trails.forEach((t,i)=>{t.show=aircraftOn[flightAi[i]] && m==="all" && !coloured;});
+  document.getElementById("speedscale").style.display=(coloured&&cm==="speed"&&m!=="off")?"block":"none";
+  document.getElementById("climbscale").style.display=(coloured&&cm==="climb"&&m!=="off")?"block":"none";
+  updateColourTrails(true);         // apply the colour-trail visibility/window immediately
+  viewer.scene.requestRender();     // requestRenderMode is on, so ask for a redraw after toggling
 }
+
+// binary search over an ascending JulianDate[] ----------------------------------------------
+function jdCountLE(times, t){       // number of samples with time <= t
+  let lo=0, hi=times.length;
+  while(lo<hi){const m=(lo+hi)>>1; if(Cesium.JulianDate.lessThanOrEquals(times[m],t)) lo=m+1; else hi=m;}
+  return lo;
+}
+function jdFirstGE(times, t){       // first index with time >= t
+  let lo=0, hi=times.length;
+  while(lo<hi){const m=(lo+hi)>>1; if(Cesium.JulianDate.lessThan(times[m],t)) lo=m+1; else hi=m;}
+  return lo;
+}
+// Progressive colour trails: reveal each flight's coloured track up to the playback clock, so a
+// single trail draws behind the glider as it flies (full/active persist from the start; tail keeps
+// the last tailSecs). Per-vertex colour needs the static primitive, which cannot itself follow the
+// clock, so we rebuild a flight's primitive only when its visible [start,end) sample window changes,
+// throttled to ~120ms wall time so a fast multiplier does not thrash the GPU. The rebuilt geometry
+// is created SYNCHRONOUSLY (asynchronous:false) so the new primitive is ready the instant the old
+// one is removed - otherwise the async build leaves a frame or two drawing nothing, i.e. flicker.
+let _colLastWall=0;
+function updateColourTrails(force){
+  const cmEl=document.querySelector('input[name=cm]:checked');
+  if(!cmEl) return;                 // legend not built yet (initial load)
+  const wall=Date.now();
+  if(!force && wall-_colLastWall<120) return;
+  _colLastWall=wall;
+  const cm=cmEl.value, m=document.querySelector('input[name=tm]:checked').value;
+  const now=viewer.clock.currentTime;
+  let changed=false;
+  colFlights.forEach(cf=>{
+    let on = cm!=="off" && m!=="off" && aircraftOn[cf.ai];
+    if(on && (m==="current" || m==="tail")){
+      // "current"/"tail" show only the flight in progress at the playback time; "all" accumulates
+      const t0=cf.times[0], t1=cf.times[cf.times.length-1];
+      on = Cesium.JulianDate.lessThanOrEquals(t0,now) && Cesium.JulianDate.lessThanOrEquals(now,t1);
+    }
+    if(!on){ if(cf.prim) cf.prim.show=false; return; }
+    const end=jdCountLE(cf.times, now);
+    const start=(m==="tail")
+      ? jdFirstGE(cf.times, Cesium.JulianDate.addSeconds(now,-tailSecs,new Cesium.JulianDate()))
+      : 0;
+    const key=cm+":"+start+":"+end;
+    if(key===cf.key){ if(cf.prim) cf.prim.show=true; return; }
+    cf.key=key;
+    if(cf.prim){ viewer.scene.primitives.remove(cf.prim); cf.prim=null; }
+    if(end-start<2) return;         // need at least one segment to draw
+    const cols=(cm==="climb"?cf.climbCol:cf.spdCol).slice(start,end);
+    cf.prim=viewer.scene.primitives.add(new Cesium.Primitive({
+      geometryInstances:new Cesium.GeometryInstance({geometry:new Cesium.PolylineGeometry({
+        positions:cf.pos.slice(start,end), width:3,
+        vertexFormat:Cesium.PolylineColorAppearance.VERTEX_FORMAT,
+        colors:cols, colorsPerVertex:true, arcType:Cesium.ArcType.NONE})}),
+      appearance:new Cesium.PolylineColorAppearance({translucent:true}),
+      asynchronous:false}));   // build now so it renders the instant the old primitive is removed
+    changed=true;
+  });
+  if(changed) viewer.scene.requestRender();
+}
+// drive the reveal off the playback clock (one listener for the whole page)
+viewer.clock.onTick.addEventListener(function(){ updateColourTrails(false); });
 function setAllAircraft(on){
   aircraftOn.fill(on);
   document.querySelectorAll('input.acft').forEach(cb=>{cb.checked=on;});
@@ -356,8 +437,8 @@ function setNight(on){
 
 // hover tooltip: show the aircraft name/registration under the cursor
 const _tip=document.createElement("div");
-_tip.style.cssText="position:fixed;z-index:30;pointer-events:none;display:none;background:rgba(0,0,0,.8);"
-  +"color:#fff;font:12px sans-serif;padding:2px 7px;border-radius:4px;white-space:nowrap";
+_tip.style.cssText="position:fixed;z-index:30;pointer-events:none;display:none;background:var(--overlay);"
+  +"border:1px solid var(--overlay-line);color:var(--text);font:12px system-ui,sans-serif;padding:2px 7px;border-radius:5px;white-space:nowrap";
 document.body.appendChild(_tip);
 new Cesium.ScreenSpaceEventHandler(viewer.scene.canvas).setInputAction(function(mv){
   const p=viewer.scene.pick(mv.endPosition);
@@ -388,7 +469,7 @@ function renderModels(DATA){
   const el=document.getElementById("models");
   if(!el)return;
   el.innerHTML="models (press 1-9 to pick, [ ] to yaw):<br>"+
-    MK.map((k,i)=>`<span style="${k===selM?'color:#8cf;font-weight:bold':''}">${i+1}. ${DATA.models[k].label}: ${Math.round(Cesium.Math.toDegrees(MYAW[k]||0))}&deg;</span>`).join("<br>");
+    MK.map((k,i)=>`<span style="${k===selM?'color:var(--accent);font-weight:bold':''}">${i+1}. ${DATA.models[k].label}: ${Math.round(Cesium.Math.toDegrees(MYAW[k]||0))}&deg;</span>`).join("<br>");
 }
 window.addEventListener("keydown",e=>{
   if(/^[1-9]$/.test(e.key)){const i=+e.key-1; if(i<MK.length){selM=MK[i]; renderModels({models:curModels});} return;}
@@ -431,18 +512,44 @@ function filterAddress(DATA, addr){
   return {title:DATA.legend[li].label+" "+(DATA.title||""),
           flights, legend:[DATA.legend[li]], models:DATA.models};
 }
+// Client-side single-FLIGHT filter: ?t=<epoch seconds or HH:MM UTC> keeps only the
+// flight whose airborne interval contains that moment (the "Watch your flight" finder
+// links here so a visitor sees just their flight, not the aircraft's whole day). If no
+// interval contains it, the nearest take-off within 15 minutes is used; failing that
+// the data is left untouched. Without ?t= behaviour is unchanged.
+function filterTime(DATA){
+  const tp=new URLSearchParams(location.search).get("t");
+  if(!tp||!DATA||!DATA.flights||!DATA.flights.length) return DATA;
+  let t=null;
+  if(/^\d{9,}$/.test(tp)) t=parseInt(tp,10);
+  else if(/^\d{1,2}:\d{2}$/.test(tp)){
+    const day=DATA.flights[0].samples[0][0].slice(0,10);
+    t=Date.parse(day+"T"+tp.padStart(5,"0")+":00Z")/1000;
+  }
+  if(t==null||!isFinite(t)) return DATA;
+  const bounds=f=>[Date.parse(f.samples[0][0])/1000,
+                   Date.parse(f.samples[f.samples.length-1][0])/1000];
+  let keep=DATA.flights.filter(f=>{const b=bounds(f); return b[0]<=t&&t<=b[1];});
+  if(!keep.length){
+    let best=null,bd=15*60+1;
+    for(const f of DATA.flights){const d=Math.abs(bounds(f)[0]-t); if(d<bd){bd=d;best=f;}}
+    if(best) keep=[best];
+  }
+  if(!keep.length||keep.length===DATA.flights.length) return DATA;
+  return Object.assign({},DATA,{flights:keep});
+}
 async function loadDay(day){
   const addr=new URLSearchParams(location.search).get("address");
   try{
     const DATA=await fetchJson(dataUrl(day+".json"));
-    renderData(filterAddress(DATA, addr));
+    renderData(filterTime(filterAddress(DATA, addr)));
   }catch(err){
     console.error("failed to load day",day,err);
     renderData({title:day, flights:[], legend:[], models:{}});
   }
 }
 async function boot(){
-  if(!EXTERNAL){ renderData(INLINE_DATA); return; }
+  if(!EXTERNAL){ renderData(filterTime(INLINE_DATA)); return; }
   if(!DAYPICKER){ await loadDay(new URLSearchParams(location.search).get("day")||""); return; }
   // public build: manifest.json -> day picker -> newest day (or ?day= override)
   let manifest;
@@ -464,13 +571,17 @@ async function boot(){
   });
 }
 boot();
+
+__HELPJS__
 </script></body></html>"""
 
-# The day-picker control, only emitted in --public builds.
-DAYPICKER_HTML = ('<div id="daypick">day: '
+# The day-picker control, only emitted in --public builds. Carries the "?" reopen
+# button for the map-controls help overlay (the private /replay gets its button from
+# the server-injected topbar instead, so there is never a duplicate).
+DAYPICKER_HTML = ('<div id="daypick" class="of-topbar">day: '
                   '<select id="daysel"></select> '
-                  '<a href="https://github.com/8none1/ognflights" target="_blank" rel="noopener">about</a>'
-                  '</div>')
+                  '<a href="https://github.com/8none1/ognflights" target="_blank" rel="noopener">about</a> '
+                  + MAP_HELP_BTN + '</div>')
 
 
 def ground_speeds_kt(fixes):
@@ -493,6 +604,31 @@ def ground_speeds_kt(fixes):
         h = math.sin(dphi / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
         d = 2 * R * math.asin(min(1.0, math.sqrt(h)))
         raw[i] = d / dt * 1.94384  # m/s -> kt
+    out = [0.0] * n
+    for i in range(n):
+        a, b = max(0, i - 2), min(n, i + 3)
+        out[i] = sum(raw[a:b]) / (b - a)
+    return out
+
+
+def climb_rates_kt(fixes):
+    """Per-fix rate of climb (knots) from the altitude track, lightly smoothed.
+
+    Derived from altitude deltas (central difference), not the raw per-beacon climb_fpm,
+    so it matches the smoothed on-screen vario readout and stays clean as a per-vertex
+    colour ramp. Positive = climbing, negative = sinking."""
+    n = len(fixes)
+    if n < 2:
+        return [0.0] * n
+    ft_to_m, ms_to_kt = 0.3048, 1 / 0.514444
+    raw = [0.0] * n
+    for i in range(n):
+        a = fixes[max(0, i - 1)]; b = fixes[min(n - 1, i + 1)]
+        dt = b.ts - a.ts
+        if dt <= 0:
+            raw[i] = raw[i - 1] if i else 0.0
+            continue
+        raw[i] = (b.alt_ft - a.alt_ft) * ft_to_m / dt * ms_to_kt  # ft/dt -> m/s -> kt
     out = [0.0] * n
     for i in range(n):
         a, b = max(0, i - 2), min(n, i + 3)
@@ -629,18 +765,24 @@ def collect(store, day, reg_spec, gliders, simplify=0.0, by_aircraft=False, addr
                         round(max(0.0, (f.alt_ft - GRANSDEN.elevation_ft) * FT_TO_M), 1)]
                        for f in fixes]
             spd = [round(v) for v in ground_speeds_kt(fixes)]
+            clb = [round(v, 1) for v in climb_rates_kt(fixes)]
             if simplify and len(samples) > 2:
                 clat = math.cos(math.radians(GRANSDEN.lat))
                 pts = [(s[1] * 111320.0 * clat, s[2] * 111320.0, s[3]) for s in samples]
                 keep = _rdp_keep(pts, simplify)
                 samples = [samples[i] for i in keep]
                 spd = [spd[i] for i in keep]
+                clb = [clb[i] for i in keep]
             name = label if by_aircraft else f"{label} F{i} {t0}Z"
             flights.append({"name": name, "color": col, "mk": mk, "cs": short_callsign(label),
-                            "ai": aidx, "samples": samples, "spd": spd})
+                            "ai": aidx, "samples": samples, "spd": spd, "climb": clb})
             used += 1
         if used:
-            legend.append({"label": label, "color": col, "n": used, "key": addr})
+            # "type" = the OGN device-database model string (e.g. "ASK-21", "SZD-50
+            # Puchacz", "DR-400"): published in the public per-day JSON so the
+            # "Watch your flight" finder can filter by aircraft type.
+            legend.append({"label": label, "color": col, "n": used, "key": addr,
+                           "type": model_str or ""})
     return flights, legend
 
 
@@ -677,7 +819,7 @@ def build_payload(flights, legend, title, models_url="models"):
             "models": models_for(used_keys, models_url)}
 
 
-def render_html(*, title, payload, home, myaw, trail, speed_colour, single_link,
+def render_html(*, title, payload, home, myaw, trail, colour_mode="off", single_link,
                 path_resolution, mult, tail_seconds=60, external=False, data_base="", daypicker=False):
     """Fill the Cesium template into a complete HTML page.
 
@@ -686,6 +828,9 @@ def render_html(*, title, payload, home, myaw, trail, speed_colour, single_link,
     is set the page loads manifest.json and shows the day-picker control."""
     return (TEMPLATE
             .replace("__DAYPICKER__", DAYPICKER_HTML if daypicker else "", 1)  # the <body> slot (before <script>)
+            .replace("__HELPHTML__", MAP_HELP_HTML)
+            .replace("__HELPJS__", MAP_HELP_JS)
+            .replace("__THEMECSS__", THEME_CSS)
             .replace("__TITLE__", title)
             .replace("__CES__", CES)
             .replace("__PAYLOAD__", json.dumps(payload) if payload is not None else "null")
@@ -695,7 +840,7 @@ def render_html(*, title, payload, home, myaw, trail, speed_colour, single_link,
             .replace("__HOME__", json.dumps(home))
             .replace("__MYAW__", json.dumps(myaw))
             .replace("__TRAILMODE__", trail)
-            .replace("__SPEEDCOL__", "true" if speed_colour else "false")
+            .replace("__COLOURMODE__", colour_mode)
             .replace("__SINGLELINK__", json.dumps(single_link))
             .replace("__PATHRES__", repr(path_resolution))
             .replace("__TAILSECS__", str(tail_seconds))
@@ -724,12 +869,16 @@ def main():
     p.add_argument("--path-resolution", type=float, default=1.0,
                    help="seconds between comet-tail (path) samples; higher = cheaper per frame "
                         "(the dashboard raises this with aircraft count). 1 = smooth, for single-aircraft replays.")
-    p.add_argument("--trail", choices=["active", "full", "tail", "off"], default="active",
-                   help="initial trail mode")
+    p.add_argument("--trail", choices=["all", "current", "tail", "off", "full", "active"],
+                   default="current",
+                   help="initial trail mode: all (every flight that day) / current (the flight in "
+                        "progress) / tail (sliding window) / off. full/active are back-compat aliases.")
     p.add_argument("--tail-seconds", type=int, default=60,
                    help='length (seconds of track) of the "tail" sliding trail mode')
+    p.add_argument("--colour-mode", choices=["off", "speed", "climb"], default="off",
+                   help="initial full-trail colouring: off (per-aircraft colour), speed, or climb rate")
     p.add_argument("--speed-colour", action="store_true",
-                   help="start with the full trail coloured by ground speed")
+                   help="alias for --colour-mode speed (kept for back-compat)")
     p.add_argument("--home", help='lon,lat,height,heading,pitch (degrees/metres)')
     p.add_argument("--yaw", help='per-model yaw in degrees, e.g. "glider=0,dr400=90"')
     p.add_argument("--models-url", default="models",
@@ -800,8 +949,10 @@ def main():
         payload = build_payload(flights, legend, a.title, a.models_url)
         single_link = a.day if a.link_single else None
 
+    colour_mode = "speed" if a.speed_colour else a.colour_mode
+    trail = {"full": "all", "active": "current"}.get(a.trail, a.trail)
     html = render_html(title=a.title, payload=payload, home=home, myaw=myaw,
-                       trail=a.trail, speed_colour=a.speed_colour, single_link=single_link,
+                       trail=trail, colour_mode=colour_mode, single_link=single_link,
                        path_resolution=a.path_resolution, mult=a.mult, tail_seconds=a.tail_seconds,
                        external=external, data_base=data_base, daypicker=daypicker)
     with open(a.out, "w") as f:

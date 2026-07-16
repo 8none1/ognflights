@@ -57,10 +57,11 @@ class Beacon:
     lat: float
     lon: float
     altitude_ft: float     # GPS altitude, ft (relative to WGS84 geoid)
-    course: int | None
+    course: int | None     # heading, degrees (0-359) from the APRS CSE field
     speed_kt: int | None
     climb_fpm: int | None
     receiver: str | None   # ground station that heard it
+    turn_rate: float | None = None  # rate of turn, half-turns/min (OGN `rot`); optional
 
 
 def _coord(raw: str, hemi: str, dao_digit: str | None) -> float:
@@ -106,6 +107,7 @@ def parse_beacon(line: str) -> Beacon | None:
         no_track = bool(flags & 0x80)
 
     fpm = _FPM.search(body)
+    rot = _ROT.search(body)
     # receiver is the last element of the AX.25 path before the ':'
     receiver = header.split(",")[-1] if "," in header else None
 
@@ -116,6 +118,7 @@ def parse_beacon(line: str) -> Beacon | None:
         course=int(m["crs"]) if m["crs"] else None,
         speed_kt=int(m["spd"]) if m["spd"] else None,
         climb_fpm=int(fpm.group(1)) if fpm else None,
+        turn_rate=float(rot.group(1)) if rot else None,
         receiver=receiver,
     )
 
