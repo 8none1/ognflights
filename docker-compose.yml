@@ -37,8 +37,17 @@ services:
     image: cloudflare/cloudflared:latest
     container_name: ognflights-cloudflared
     restart: unless-stopped
-    command: tunnel --no-autoupdate run
+    # --metrics enables the local readiness endpoint that `tunnel ready` queries
+    command: tunnel --metrics localhost:2000 --no-autoupdate run
     environment:
       TUNNEL_TOKEN: ${CLOUDFLARED_TOKEN:-}
+    # `tunnel ready` = at least one live connection to the Cloudflare edge,
+    # i.e. the tunnel is actually passing traffic, not just the process running
+    healthcheck:
+      test: ['CMD', 'cloudflared', 'tunnel', '--metrics', 'localhost:2000', 'ready']
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
     depends_on:
       - ognflights
