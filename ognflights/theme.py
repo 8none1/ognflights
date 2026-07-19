@@ -163,6 +163,10 @@ MAP_HELP_HTML = (
     'up or down also zooms, or pinch on a trackpad.</li>'
     '<li><b>Hold Ctrl and left-click and drag</b> (or <b>middle-click and drag</b>) '
     'to tilt the camera and change the viewing angle.</li>'
+    # replay only: hidden on /live (no timeline) by MAP_HELP_JS.
+    '<li id="maphelp-play"><b>Playback</b>: the flight plays automatically. Use the round '
+    '<b>play / pause</b> button in the clock dial at the <b>bottom-left</b> to start or stop '
+    'it, and drag the <b>timeline</b> along the bottom to jump to any moment.</li>'
     '</ul>'
     '<button type="button" class="of-btn-primary" id="maphelpok">Got it</button>'
     '</div></div>')
@@ -189,9 +193,16 @@ MAP_HELP_JS = r"""// map-controls help overlay (shared: see ognflights/theme.py)
     var b=e.target.closest ? e.target.closest("#maphelpbtn") : null;
     if(b){ e.preventDefault(); openHelp(); }
   });
+  // the playback line only applies where there's a timeline (the replay), not on /live
+  var pl=document.getElementById("maphelp-play");
+  if(pl && !document.querySelector(".cesium-viewer-animationContainer")) pl.style.display="none";
+  // arriving via "watch my flight" (?guide=1) forces the help open even for a returning
+  // visitor, because we should assume they don't know the controls.
+  var guide=false;
+  try{ guide=new URLSearchParams(location.search).get("guide")==="1"; }catch(e){}
   var seen=false;
   try{ seen=localStorage.getItem(KEY)==="1"; }catch(e){ seen=true; }
-  if(!seen && !window.OF_HELP_SUPPRESS) openHelp();
+  if((guide || !seen) && !window.OF_HELP_SUPPRESS) openHelp();
 })();"""
 
 # The topbar "?" reopen control (works after dismissal; hidden with the rest of the

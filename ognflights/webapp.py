@@ -1367,7 +1367,7 @@ function card(day,legend,m){
   const ident="day="+encodeURIComponent(day)
     +"&address="+encodeURIComponent(a.key||"")
     +"&t="+Math.round(m.s);
-  const href="/replay?"+ident;
+  const href="/replay?"+ident+"&guide=1";   // first-timer from "watch my flight": force the help pop-over
   // same day/address/t identifier drives the server-side KML export (only when this page
   // is served next to the DB - see CANDL).
   const dl=CANDL?'<a class="of-btn-secondary" href="/download?'+ident+'&fmt=kml">Download for Google Earth</a>':"";
