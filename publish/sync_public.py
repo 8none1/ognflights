@@ -110,6 +110,16 @@ def publish_days(out_dir, data_dir="data", day_list=None, models_url="models"):
                                "flights": len(payload["flights"]),
                                "aircraft": len(payload["legend"])}
 
+    # publish the cached thermal hotspots too, so the public replay's overlay can fetch them.
+    # Guarded: a thermals problem must never break the day/manifest publish.
+    try:
+        from ognflights import thermals as _thermals
+        th_text = json.dumps({"hotspots": _thermals.load_cached(data_dir)}, separators=(",", ":"))
+        if _write_if_changed(os.path.join(out_dir, "thermals.json"), th_text):
+            written.append("thermals.json")
+    except Exception:
+        pass
+
     entries = sorted(days_by_str.values(), key=lambda e: e["day"], reverse=True)  # newest first
     manifest = {"generated": int(time.time()), "days": entries}
     # 'generated' changes every run; only rewrite the file if the day list actually changed,

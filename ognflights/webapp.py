@@ -787,6 +787,7 @@ function buildSettings(){
     +`<label style="display:block;margin-top:4px"><input type="checkbox" id="readoutlbl" checked> altitude / climb readouts</label>`
     +`<label style="display:block;margin-top:4px"><input type="checkbox" id="parkedlbl" checked> parked aircraft</label>`
     +`<label style="display:block;margin-top:4px"><input type="checkbox" id="nightlbl" checked> Night sky</label>`
+    +`<label style="display:block;margin-top:4px"><input type="checkbox" id="thermalslbl"> thermal hotspots</label>`
     +`<label style="display:block;margin-top:4px"><input type="checkbox" id="placelbl"> place names</label>`
     +`<button id="resetview" style="cursor:pointer;margin-top:6px">reset view</button>`
     +`</div>`;
@@ -798,6 +799,7 @@ function buildSettings(){
     applyTrailLength();
   });
   document.getElementById("readoutlbl").addEventListener("change",e=>{ readoutsOn=e.target.checked; applyReadouts(); });
+  document.getElementById("thermalslbl").addEventListener("change",e=>{ setThermals(e.target.checked); });
   document.getElementById("parkedlbl").addEventListener("change",e=>{
     parkedOn=e.target.checked;
     if(!parkedOn){ for(const addr of Object.keys(parked)) removeParked(addr); } // hide + clear so stale ones don't linger
@@ -942,6 +944,19 @@ new Cesium.ScreenSpaceEventHandler(viewer.scene.canvas).setInputAction(function(
   requestAnimationFrame(orbit);
 })();
 
+// --- thermal-hotspots overlay (shared renderer; lazy-loaded on first toggle) ------------
+__THERMALSJS__
+let liveThermal={layer:null,on:false};
+function setThermals(on){
+  liveThermal.on=on;
+  if(on && !liveThermal.layer){
+    fetch("/thermals.json").then(function(r){return r.json();}).then(function(d){
+      liveThermal.layer=ognThermalLayer(viewer,d.hotspots,FIELD_ELEV_FT);
+      liveThermal.layer.show(liveThermal.on);
+    }).catch(function(e){});
+  } else if(liveThermal.layer){ liveThermal.layer.show(on); }
+}
+
 __HELPJS__
 </script></body></html>"""
 
@@ -1053,6 +1068,7 @@ def _live_page(data_dir: str = "") -> str:
             .replace("__HELPBTN__", MAP_HELP_BTN)
             .replace("__HELPHTML__", MAP_HELP_HTML)
             .replace("__HELPJS__", MAP_HELP_JS)
+            .replace("__THERMALSJS__", THERMALS_JS)
             .replace("__FIELDELEV__", repr(float(GRANSDEN.elevation_ft)))
             .replace("__DEMOLON__", repr(float(GRANSDEN.lon)))
             .replace("__DEMOLAT__", repr(float(GRANSDEN.lat)))

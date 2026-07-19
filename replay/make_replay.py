@@ -23,7 +23,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from ognflights.config import GRANSDEN, GROUND_AGL_FT, MIN_FLIGHT_PEAK_AGL_FT
 from ognflights.flights import Flight, segment
 from ognflights.store import Store, store_for_day
-from ognflights.theme import MAP_HELP_BTN, MAP_HELP_HTML, MAP_HELP_JS, THEME_CSS
+from ognflights.theme import MAP_HELP_BTN, MAP_HELP_HTML, MAP_HELP_JS, THEME_CSS, THERMALS_JS
 
 FT_TO_M = 0.3048
 GLIDERISH = {"glider", "tow", "motorglider"}
@@ -285,6 +285,7 @@ function renderData(DATA){
       <div id="climbscale" style="display:none;margin:3px 0">
         <span style="display:inline-block;width:130px;height:9px;border-radius:2px;background:linear-gradient(90deg,#2673ff,#cccccc,#ff481a)"></span>
         <br><span class="hint">sink ${CLB_LO} &rarr; +${CLB_HI} kt climb</span></div>
+      <br><label style="cursor:pointer"><input type="checkbox" id="thermals"> thermal hotspots</label>
       <br><label style="cursor:pointer"><input type="checkbox" id="placenames"> place names</label>
       <br><button id="resetview" style="cursor:pointer;margin-top:4px">reset view</button>
       <details id="settings" style="margin-top:6px">
@@ -325,6 +326,8 @@ function renderData(DATA){
     applyTrails();
   });
   document.querySelectorAll('input[name=cm]').forEach(r=>r.addEventListener("change",applyTrails));
+  const thBox=document.getElementById("thermals");
+  if(thBox){ thBox.checked=ognThermalState.on; thBox.addEventListener("change",e=>setThermals(e.target.checked)); }
   document.querySelector('input[name=tm][value="'+TRAILMODE+'"]').checked=true;
   document.querySelector('input[name=cm][value="'+COLOURMODE+'"]').checked=true;
   applyTrails();
@@ -645,6 +648,19 @@ async function boot(){
 }
 boot();
 
+// --- thermal-hotspots overlay (shared renderer; lazy-loaded on first toggle) ------------
+__THERMALSJS__
+let ognThermalState={layer:null,on:false};
+function setThermals(on){
+  ognThermalState.on=on;
+  if(on && !ognThermalState.layer){
+    fetch(dataUrl("thermals.json")).then(function(r){return r.json();}).then(function(d){
+      ognThermalState.layer=ognThermalLayer(viewer,d.hotspots,FIELD_ELEV_FT);
+      ognThermalState.layer.show(ognThermalState.on);
+    }).catch(function(e){});
+  } else if(ognThermalState.layer){ ognThermalState.layer.show(on); }
+}
+
 __HELPJS__
 </script></body></html>"""
 
@@ -905,6 +921,7 @@ def render_html(*, title, payload, home, myaw, trail, colour_mode="off", single_
             .replace("__DAYPICKER__", DAYPICKER_HTML if daypicker else "", 1)  # the <body> slot (before <script>)
             .replace("__HELPHTML__", MAP_HELP_HTML)
             .replace("__HELPJS__", MAP_HELP_JS)
+            .replace("__THERMALSJS__", THERMALS_JS)
             .replace("__THEMECSS__", THEME_CSS)
             .replace("__TITLE__", title)
             .replace("__CES__", CES)
