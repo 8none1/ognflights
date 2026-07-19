@@ -369,6 +369,17 @@ goHome();
 
 const GRACE_MS=60000;    // remove an aircraft this long after its last event
 let maxTrail=600;        // bounded recent-points trail per aircraft (tuned by the settings slider)
+let trailColour="off";   // "off" | "speed" | "climb": colour each trail by the aircraft's CURRENT value
+const SPD_LO=30,SPD_HI=110;   // knots across the speed ramp (matches the replay)
+function speedColor(kt){const t=Math.max(0,Math.min(1,(kt-SPD_LO)/(SPD_HI-SPD_LO)));
+  const st=[[0.12,0.12,0.5],[0.0,0.8,0.5],[1.0,1.0,0.5]];
+  const seg=t*2,i=Math.min(1,Math.floor(seg)),f=seg-i,a=st[i],b=st[i+1]||st[i];
+  return new Cesium.Color(a[0]+(b[0]-a[0])*f,a[1]+(b[1]-a[1])*f,a[2]+(b[2]-a[2])*f,1);}
+const CLB_LO=-6,CLB_HI=6;     // knots (sink..climb) across the climb ramp (matches the replay)
+function climbColor(kt){const t=Math.max(0,Math.min(1,(kt-CLB_LO)/(CLB_HI-CLB_LO)));
+  const st=[[0.15,0.45,1.0],[0.80,0.80,0.80],[1.0,0.28,0.10]];
+  const seg=t*2,i=Math.min(1,Math.floor(seg)),f=seg-i,a=st[i],b=st[i+1]||st[i];
+  return new Cesium.Color(a[0]+(b[0]-a[0])*f,a[1]+(b[1]-a[1])*f,a[2]+(b[2]-a[2])*f,1);}
 const ORIENT_MIN_M=30;   // walk back through the trail until at least this far behind
 const ORIENT_STATIONARY_M=10; // below this displacement, keep the last-good heading (no spin)
 // Pitch: OGN altitude is noisy, so a single short baseline gives a wildly exaggerated
@@ -497,7 +508,11 @@ function ensure(addr,name,color,model){
   e.trail=viewer.entities.add({
     name:name+" trail", show:trailsOn,
     polyline:{positions:new Cesium.CallbackProperty(()=>e._trail,false),
-      width:2, material:col.withAlpha(0.55)}
+      width:2, material:new Cesium.ColorMaterialProperty(new Cesium.CallbackProperty(function(){
+        if(trailColour==="climb" && e._vario!=null) return climbColor(e._vario).withAlpha(0.75);
+        if(trailColour==="speed" && e._speed!=null) return speedColor(e._speed).withAlpha(0.75);
+        return col.withAlpha(0.55);
+      },false))}
   });
   return e;
 }
@@ -689,6 +704,10 @@ function refresh(e){
   const dl=e.dpts[e.dpts.length-1];
   e._pos=Cesium.Cartesian3.fromDegrees(dl[0],dl[1],dl[2]);
   e._trail=trailPositions(trailWindow(e.dpts));
+  const dd=e.dpts;   // current ground speed (kt) from the last two despiked points, for the trail colour
+  if(dd.length>=2){const a=dd[dd.length-2],b=dd[dd.length-1],dt=(a[3]!=null&&b[3]!=null)?b[3]-a[3]:0;
+    if(dt>0){const R=6371000,toR=Math.PI/180,la=(a[1]+b[1])/2*toR;
+      e._speed=R*Math.hypot((b[1]-a[1])*toR,(b[0]-a[0])*toR*Math.cos(la))/dt*1.94384;}}
   updateOrientation(e);
 }
 function pushPoint(e,pt){
@@ -784,6 +803,8 @@ function buildSettings(){
     +`<label style="display:block"><input type="checkbox" id="traillbl"${trailsOn?" checked":""}> Trail</label>`
     +`<label style="display:block;margin-top:4px">trail length: <span id="tlen">${maxTrail}</span> pts<br>`
     +`<input type="range" id="trailrange" min="20" max="1200" step="20" value="${maxTrail}" style="width:150px"></label>`
+    +`<label style="display:block;margin-top:4px">trail colour: <select id="trailcol">`
+      +`<option value="off">off</option><option value="speed">speed</option><option value="climb">climb</option></select></label>`
     +`<label style="display:block;margin-top:4px"><input type="checkbox" id="readoutlbl" checked> altitude / climb readouts</label>`
     +`<label style="display:block;margin-top:4px"><input type="checkbox" id="parkedlbl" checked> parked aircraft</label>`
     +`<label style="display:block;margin-top:4px"><input type="checkbox" id="nightlbl" checked> Night sky</label>`
@@ -799,6 +820,9 @@ function buildSettings(){
     applyTrailLength();
   });
   document.getElementById("readoutlbl").addEventListener("change",e=>{ readoutsOn=e.target.checked; applyReadouts(); });
+  const tcol=document.getElementById("trailcol");
+  if(tcol) tcol.addEventListener("change",e=>{ trailColour=e.target.value;
+    if(viewer.scene.requestRenderMode) viewer.scene.requestRender(); });
   document.getElementById("thermalslbl").addEventListener("change",e=>{ setThermals(e.target.checked); });
   document.getElementById("parkedlbl").addEventListener("change",e=>{
     parkedOn=e.target.checked;
