@@ -183,6 +183,17 @@ def publish_once(day_list, flatten=False) -> bool:
     return True
 
 
+def _recompute_thermals_safe():
+    """Recompute the last-7-days thermal hotspots into data/thermals.sqlite. Guarded so a
+    failure never touches publishing/capture. Writes a separate DB (no collector contention)."""
+    try:
+        from ognflights import thermals, config
+        hs = thermals.recompute(config.DATA_DIR, config.GRANSDEN, days=7)
+        logger.info("thermals: recomputed %d hotspot(s) over the last 7 days", len(hs))
+    except Exception as e:
+        logger.warning("thermals recompute failed: %s", e)
+
+
 def _day_plan(now, last_day):
     """Decide which days to (re)build this run and whether to flatten afterwards.
 
@@ -220,6 +231,8 @@ def _loop(interval_s, status=None):
             publish_once(day_list, flatten=flatten)
             last_day = today_date
             ok = True
+            if flatten:                      # once a day, after the day rolls over
+                _recompute_thermals_safe()
         except subprocess.CalledProcessError as e:
             err = f"git: {e}"
             logger.warning("publish failed (git): %s%s", e,

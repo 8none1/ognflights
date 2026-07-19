@@ -88,6 +88,16 @@ def cmd_healthcheck(a):
     return 0 if code == 200 else 1
 
 
+def cmd_thermals(a):
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    from ognflights import thermals, config
+    hotspots = thermals.recompute(config.DATA_DIR, GRANSDEN, days=a.days)
+    print(f"{len(hotspots)} hotspots (last {a.days} days) -> {thermals.store_path()}")
+    for h in hotspots[:15]:
+        print(f"  {h['ac_days']:2d} ac-days  {h['climb_kt']:.1f}kt  r={h['radius_m']:.0f}m  "
+              f"drift {h['drift_m']:.0f}m@{h['drift_deg']:03.0f}deg  @ {h['lat']},{h['lon']}")
+
+
 def cmd_collect(a):
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     store, ddb = Store(DB_PATH), DDB()
@@ -255,6 +265,10 @@ def main():
     pub.add_argument("--commit", action="store_true", help="git add/commit in --out (public-data worktree)")
     pub.add_argument("--push", action="store_true", help="with --commit, also push (Phase 2 only)")
     pub.set_defaults(func=cmd_publish)
+
+    th = sub.add_parser("thermals", help="compute + cache thermal hotspots (last N days) into data/thermals.sqlite")
+    th.add_argument("--days", type=int, default=7, help="window in days (default 7)")
+    th.set_defaults(func=cmd_thermals)
 
     ea = sub.add_parser("earth", help="dump all tracks for a day into one KML")
     ea.add_argument("--day", required=True)
