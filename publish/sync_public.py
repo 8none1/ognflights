@@ -70,44 +70,50 @@ def build_day(day, data_dir, models_url="models"):
     return build_payload(flights, legend, f"Gransden {daystr}", models_url=models_url)
 
 
-def sync(out_dir, data_dir="data", days=7, models_url="models", today=None):
-    """Build the last `days` day-JSONs + manifest.json into out_dir.
-    Prunes day files older than the window. Returns (written_files, manifest)."""
-    os.makedirs(out_dir, exist_ok=True)
-    today = today or datetime.now(timezone.utc)
-    today = today.replace(hour=0, minute=0, second=0, microsecond=0)
-    window = [today - timedelta(days=i) for i in range(days)]
-    keep = {d.strftime("%Y-%m-%d") + ".json" for d in window}
+def _load_manifest_days(out_dir):
+    """Existing manifest day-entries as {daystr: entry}, or {} if none/unreadable."""
+    mpath = os.path.join(out_dir, "manifest.json")
+    if os.path.exists(mpath):
+        try:
+            with open(mpath) as f:
+                return {e["day"]: e for e in json.load(f).get("days", [])}
+        except (ValueError, OSError, KeyError, TypeError):
+            pass
+    return {}
 
+
+def publish_days(out_dir, data_dir="data", day_list=None, models_url="models"):
+    """Build the given days into out_dir and merge them into the manifest.
+
+    ACCUMULATES: days not in `day_list` are left untouched, so the published set grows
+    indefinitely (the source SQLite keeps everything; the page fetches one day at a
+    time, so history never slows it down). A day in the list that now has no flights is
+    removed from both the file and the manifest. Returns (written_files, manifest).
+    """
+    os.makedirs(out_dir, exist_ok=True)
+    days_by_str = _load_manifest_days(out_dir)   # all days ever published, keyed by daystr
     written = []
-    entries = []  # newest first
-    for day in window:   # window is already newest-first
+    for day in (day_list or []):
         daystr = day.strftime("%Y-%m-%d")
         payload = build_day(day, data_dir, models_url=models_url)
+        path = os.path.join(out_dir, daystr + ".json")
         if payload is None:
-            # stale file for a day that now has no flights: drop it
-            stale = os.path.join(out_dir, daystr + ".json")
-            if os.path.exists(stale):
-                os.remove(stale)
+            if os.path.exists(path):
+                os.remove(path)
+                written.append("(removed " + daystr + ".json)")
+            days_by_str.pop(daystr, None)
             continue
         text = json.dumps(payload, separators=(",", ":"), sort_keys=True)
-        path = os.path.join(out_dir, daystr + ".json")
         if _write_if_changed(path, text):
-            written.append(os.path.basename(path))
-        entries.append({"day": daystr,
-                        "flights": len(payload["flights"]),
-                        "aircraft": len(payload["legend"])})
+            written.append(daystr + ".json")
+        days_by_str[daystr] = {"day": daystr,
+                               "flights": len(payload["flights"]),
+                               "aircraft": len(payload["legend"])}
 
-    # prune day files outside the window (e.g. yesterday's slid out of a rolling 7)
-    for fn in os.listdir(out_dir):
-        if fn.endswith(".json") and fn != "manifest.json" and fn not in keep:
-            os.remove(os.path.join(out_dir, fn))
-            written.append("(pruned " + fn + ")")
-
-    manifest = {"generated": int(time.time()),
-                "days": entries}
-    # manifest 'generated' changes every run; only rewrite if the day list changed, so
-    # hourly runs with no new day don't churn the file. Compare ignoring 'generated'.
+    entries = sorted(days_by_str.values(), key=lambda e: e["day"], reverse=True)  # newest first
+    manifest = {"generated": int(time.time()), "days": entries}
+    # 'generated' changes every run; only rewrite the file if the day list actually changed,
+    # so hourly no-op runs don't churn git. Compare ignoring 'generated'.
     mpath = os.path.join(out_dir, "manifest.json")
     prev_days = None
     if os.path.exists(mpath):
@@ -121,6 +127,15 @@ def sync(out_dir, data_dir="data", days=7, models_url="models", today=None):
             json.dump(manifest, f, separators=(",", ":"), sort_keys=True)
         written.append("manifest.json")
     return written, manifest
+
+
+def sync(out_dir, data_dir="data", days=7, models_url="models", today=None):
+    """Build the last `days` days (newest-first), accumulating into the manifest.
+    Never prunes older days. Returns (written_files, manifest)."""
+    today = today or datetime.now(timezone.utc)
+    today = today.replace(hour=0, minute=0, second=0, microsecond=0)
+    day_list = [today - timedelta(days=i) for i in range(days)]
+    return publish_days(out_dir, data_dir=data_dir, day_list=day_list, models_url=models_url)
 
 
 # Never let git spin off a *detached* background gc/maintenance: as a container PID 1 those

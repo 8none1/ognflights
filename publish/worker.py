@@ -29,7 +29,7 @@ import os
 import subprocess
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 logger = logging.getLogger(__name__)
 
@@ -121,11 +121,30 @@ def _has_staged_changes(workdir, env) -> bool:
     return _git(workdir, "diff", "--cached", "--quiet", env=env, check=False).returncode != 0
 
 
-def publish_once() -> bool:
-    """Run one publish cycle. Returns True if it pushed a new commit, else False.
+def _flatten_and_push(workdir, branch, env) -> bool:
+    """Collapse the branch to a single commit holding the current tree, and force-push.
 
-    Fully self-contained and exception-guarded by the caller. Raises on failure so
-    the caller can log; callers in the worker loop swallow the exception.
+    public-data is a derived snapshot, so its history has no value; the hourly commits
+    would otherwise bloat .git without end. Flattening once a day resets that. The files
+    at HEAD are unchanged, so the raw.githubusercontent URLs keep working.
+    """
+    stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%MZ")
+    _git(workdir, "checkout", "-q", "--orphan", "_flat", env=env)   # new root, keeps the worktree
+    _git(workdir, "add", "-A", env=env)
+    _git(workdir, "commit", "-q", "-m", f"public-data: daily snapshot {stamp}", env=env)
+    _git(workdir, "branch", "-q", "-M", branch, env=env)            # replace branch with _flat
+    _git(workdir, "push", "-q", "-f", "origin", f"{branch}:{branch}", env=env)
+    logger.info("publish: flattened %s to a single commit and force-pushed", branch)
+    return True
+
+
+def publish_once(day_list, flatten=False) -> bool:
+    """Build the given days into the public-data worktree and push. Returns True if pushed.
+
+    Only the days in `day_list` are rebuilt; everything else already published is left in
+    place (see publish_days), so the set accumulates indefinitely. `flatten` collapses the
+    branch history to one commit (done once a day, after finalising the day that ended).
+    Fully self-contained and exception-guarded by the caller.
     """
     remote = _env("OGNFLIGHTS_PUBLISH_REMOTE")
     if not remote:
@@ -135,26 +154,28 @@ def publish_once() -> bool:
         raise RuntimeError(f"deploy key not found: {deploy_key!r}")
     branch = _env("OGNFLIGHTS_PUBLISH_BRANCH", "public-data")
     workdir = _env("OGNFLIGHTS_PUBLISH_WORKDIR", "/app/data/.publish-repo")
-    days = int(_env("OGNFLIGHTS_PUBLISH_DAYS", "7"))
 
     # Import here so a headless collector without publishing needn't import replay/etc.
     from ognflights.config import DATA_DIR
-    from publish.sync_public import sync
+    from publish.sync_public import publish_days
 
     env = _git_env(deploy_key)
     _ensure_repo(workdir, remote, branch, env)
 
-    # Build the JSONs + manifest into the worktree, reading the year DB read-only.
-    written, manifest = sync(workdir, data_dir=DATA_DIR, days=days)
-    logger.info("publish: %d day(s) with flights; changed: %s",
+    # Build only the requested days into the worktree, reading the year DB read-only.
+    written, manifest = publish_days(workdir, data_dir=DATA_DIR, day_list=day_list)
+    logger.info("publish: %d day(s) published; built [%s]; changed: %s",
                 len(manifest["days"]),
+                ", ".join(d.strftime("%Y-%m-%d") for d in day_list),
                 ", ".join(written) if written else "(none)")
+
+    if flatten:
+        return _flatten_and_push(workdir, branch, env)
 
     _git(workdir, "add", "-A", env=env)
     if not _has_staged_changes(workdir, env):
         logger.info("publish: no changes to push")
         return False
-
     stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%MZ")
     _git(workdir, "commit", "-q", "-m", f"public-data: refresh {stamp}", env=env)
     _git(workdir, "push", "-q", "origin", f"HEAD:{branch}", env=env)
@@ -162,17 +183,42 @@ def publish_once() -> bool:
     return True
 
 
-def _loop(interval_s, status=None):
-    """Worker loop: bootstrap publish on startup, then every interval_s.
+def _day_plan(now, last_day):
+    """Decide which days to (re)build this run and whether to flatten afterwards.
 
-    If `status` (the shared collector status dict) is given, record the outcome of
-    each cycle under status["publish"] so the /stats page and /healthz can surface
-    whether publishing is keeping up.
+    - normal hourly run (same UTC day as last time): rebuild TODAY only. Past days never
+      change once the day is over, so there is nothing to redo - the hourly cost is one day
+      regardless of how much history has accumulated.
+    - first run after (re)start: also rebuild yesterday, in case we restarted after midnight
+      and yesterday's final stretch was never captured.
+    - first run after the UTC date rolls over: rebuild every day since the last run (finalising
+      the day that just ended, incl. its post-last-run tail) and flatten the branch.
+    Returns (day_list_of_midnight_UTC_datetimes, flatten_bool, today_date).
     """
+    today = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    today_date = now.date()
+    if last_day is None:
+        return [today, today - timedelta(days=1)], False, today_date
+    if today_date != last_day:
+        gap = (today_date - last_day).days
+        return [today - timedelta(days=i) for i in range(gap + 1)], True, today_date
+    return [today], False, today_date
+
+
+def _loop(interval_s, status=None):
+    """Worker loop: publish today every interval; finalise + flatten once the day rolls over.
+
+    If `status` (the shared collector status dict) is given, record the outcome of each
+    cycle under status["publish"] so the /stats page and /healthz can surface whether
+    publishing is keeping up.
+    """
+    last_day = None
     while True:
         ok, err = False, None
         try:
-            publish_once()
+            day_list, flatten, today_date = _day_plan(datetime.now(timezone.utc), last_day)
+            publish_once(day_list, flatten=flatten)
+            last_day = today_date
             ok = True
         except subprocess.CalledProcessError as e:
             err = f"git: {e}"

@@ -74,7 +74,20 @@ font:12px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif;padding:9px 11px;max
 #legend a{color:var(--blue)}
 .sw{display:inline-block;width:12px;height:12px;margin-right:6px;border-radius:3px;vertical-align:middle}
 #empty{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);z-index:15;display:none;
-font:15px system-ui,-apple-system,"Segoe UI",sans-serif;padding:14px 18px}</style>
+font:15px system-ui,-apple-system,"Segoe UI",sans-serif;padding:14px 18px}
+#daybtn{cursor:pointer}
+#cal{position:absolute;top:100%;left:0;margin-top:6px;padding:8px 10px;width:232px;z-index:25}
+#cal[hidden]{display:none}
+#cal .calnav{display:flex;align-items:center;justify-content:space-between;margin-bottom:5px}
+#cal .calnav .mlabel{font-weight:700}
+#cal table{border-collapse:collapse;width:100%}
+#cal th{color:var(--faint);font-weight:600;font-size:10px;padding:2px 0}
+#cal td{padding:1px}
+#cal td button{width:100%;height:24px;padding:0;border:1px solid transparent;background:transparent;
+color:var(--faint);border-radius:5px;font:12px system-ui,sans-serif}
+#cal td button.has{color:var(--text);font-weight:700;background:var(--panel);cursor:pointer}
+#cal td button.has:hover{border-color:var(--blue)}
+#cal td button.sel{background:var(--accent);color:var(--accent-ink);border-color:var(--accent)}</style>
 </head><body><div id="c"></div><div id="legend" class="of-panel"></div>__DAYPICKER__<div id="empty" class="of-panel">No flights recorded for this day.</div>
 __HELPHTML__
 <script>
@@ -548,27 +561,87 @@ async function loadDay(day){
     renderData({title:day, flights:[], legend:[], models:{}});
   }
 }
+// --- custom month calendar (public day picker) --------------------------------------------
+// Only days that actually have flights are clickable/bold; empty days are faint + disabled.
+// The manifest can grow indefinitely, so a month grid scales far better than a flat list.
+let CAL_DAYS=new Set();      // "YYYY-MM-DD" strings that have flights
+let CAL_MIN="", CAL_MAX="";  // earliest / latest flight day (bounds month navigation)
+let calY=0, calM=0;          // month currently shown (calM is 0-11)
+let calSel="";               // currently-selected day
+
+function ymd(y,m,d){ return y+"-"+String(m+1).padStart(2,"0")+"-"+String(d).padStart(2,"0"); }
+function monthStr(y,m){ return y+"-"+String(m+1).padStart(2,"0"); }
+
+function renderCal(){
+  const cal=document.getElementById("cal");
+  const first=new Date(Date.UTC(calY,calM,1));
+  const lead=(first.getUTCDay()+6)%7;                        // leading blanks (Mon=0..Sun=6)
+  const dim=new Date(Date.UTC(calY,calM+1,0)).getUTCDate();  // days in this month
+  const label=first.toLocaleString("en-GB",{month:"long",year:"numeric",timeZone:"UTC"});
+  const cur=monthStr(calY,calM);
+  const canPrev=cur>CAL_MIN.slice(0,7), canNext=cur<CAL_MAX.slice(0,7);
+  const cells=[];
+  for(let i=0;i<lead;i++) cells.push("<td></td>");
+  for(let d=1;d<=dim;d++){
+    const ds=ymd(calY,calM,d), has=CAL_DAYS.has(ds);
+    const cls=(has?"has":"")+(ds===calSel?" sel":"");
+    cells.push(`<td><button data-d="${ds}" class="${cls}"${has?"":" disabled"}>${d}</button></td>`);
+  }
+  while(cells.length%7) cells.push("<td></td>");
+  let rows="";
+  for(let i=0;i<cells.length;i+=7) rows+="<tr>"+cells.slice(i,i+7).join("")+"</tr>";
+  cal.innerHTML=
+    `<div class="calnav"><button id="calprev"${canPrev?"":" disabled"}>&lsaquo;</button>`+
+    `<span class="mlabel">${label}</span><button id="calnext"${canNext?"":" disabled"}>&rsaquo;</button></div>`+
+    `<table><thead><tr><th>Mo</th><th>Tu</th><th>We</th><th>Th</th><th>Fr</th><th>Sa</th><th>Su</th></tr></thead>`+
+    `<tbody>${rows}</tbody></table>`;
+}
+function openCal(show){
+  const cal=document.getElementById("cal");
+  if(show===undefined) show=cal.hidden;   // no arg = toggle
+  cal.hidden=!show;
+  document.getElementById("daybtn").setAttribute("aria-expanded", show?"true":"false");
+  if(show){ if(calSel){ calY=+calSel.slice(0,4); calM=+calSel.slice(5,7)-1; } renderCal(); }
+}
+function stepMonth(delta){
+  const d=new Date(Date.UTC(calY,calM+delta,1));
+  calY=d.getUTCFullYear(); calM=d.getUTCMonth(); renderCal();
+}
+function pickDay(ds){
+  calSel=ds;
+  document.getElementById("daybtn").innerHTML=ds+" &#9662;";
+  const p=new URLSearchParams(location.search);
+  p.set("day",ds); p.delete("address");
+  history.replaceState(null,"","?"+p.toString());
+  openCal(false);
+  loadDay(ds);
+}
+
 async function boot(){
   if(!EXTERNAL){ renderData(filterTime(INLINE_DATA)); return; }
   if(!DAYPICKER){ await loadDay(new URLSearchParams(location.search).get("day")||""); return; }
-  // public build: manifest.json -> day picker -> newest day (or ?day= override)
+  // public build: manifest.json -> calendar -> newest day (or ?day= override)
   let manifest;
   try{ manifest=await fetchJson(dataUrl("manifest.json")); }
   catch(err){ console.error("manifest load failed",err); renderData({title:"", flights:[], legend:[], models:{}}); return; }
   const days=(manifest.days||[]).map(d=>typeof d==="string"?d:d.day);
-  const sel=document.getElementById("daysel");
-  sel.innerHTML=days.map(d=>`<option value="${d}">${d}</option>`).join("");
-  const params=new URLSearchParams(location.search);
-  let want=params.get("day");
-  if(!want||days.indexOf(want)<0)want=days[0];
-  if(want){ sel.value=want; await loadDay(want); }
-  else renderData({title:"", flights:[], legend:[], models:{}});
-  sel.addEventListener("change",()=>{
-    const p=new URLSearchParams(location.search);
-    p.set("day",sel.value); p.delete("address");
-    history.replaceState(null,"","?"+p.toString());
-    loadDay(sel.value);
+  if(!days.length){ renderData({title:"", flights:[], legend:[], models:{}}); return; }
+  CAL_DAYS=new Set(days);
+  const sorted=days.slice().sort();                 // "YYYY-MM-DD" sorts chronologically
+  CAL_MIN=sorted[0]; CAL_MAX=sorted[sorted.length-1];
+  let want=new URLSearchParams(location.search).get("day");
+  if(!want||!CAL_DAYS.has(want)) want=CAL_MAX;       // default to the newest day
+  calSel=want; calY=+want.slice(0,4); calM=+want.slice(5,7)-1;
+  document.getElementById("daybtn").innerHTML=want+" &#9662;";
+  await loadDay(want);
+  document.getElementById("daybtn").addEventListener("click",e=>{ e.stopPropagation(); openCal(); });
+  document.getElementById("cal").addEventListener("click",e=>{
+    const b=e.target.closest("button"); if(!b) return;
+    if(b.id==="calprev"){ if(!b.disabled) stepMonth(-1); return; }
+    if(b.id==="calnext"){ if(!b.disabled) stepMonth(1); return; }
+    if(b.dataset.d && !b.disabled) pickDay(b.dataset.d);
   });
+  document.addEventListener("click",e=>{ if(!e.target.closest("#daypick")) openCal(false); });
 }
 boot();
 
@@ -578,10 +651,12 @@ __HELPJS__
 # The day-picker control, only emitted in --public builds. Carries the "?" reopen
 # button for the map-controls help overlay (the private /replay gets its button from
 # the server-injected topbar instead, so there is never a duplicate).
-DAYPICKER_HTML = ('<div id="daypick" class="of-topbar">day: '
-                  '<select id="daysel"></select> '
+DAYPICKER_HTML = ('<div id="daypick" class="of-topbar">'
+                  '<button id="daybtn" type="button" aria-haspopup="true" aria-expanded="false">'
+                  'day &#9662;</button> '
                   '<a href="https://github.com/8none1/ognflights" target="_blank" rel="noopener">about</a> '
-                  + MAP_HELP_BTN + '</div>')
+                  + MAP_HELP_BTN +
+                  '<div id="cal" class="of-panel" hidden></div></div>')
 
 
 def ground_speeds_kt(fixes):
