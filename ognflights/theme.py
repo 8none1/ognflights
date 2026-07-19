@@ -213,7 +213,10 @@ SOAR_SVG = """<svg class="soar" viewBox="0 0 300 100" fill="none" aria-hidden="t
 
 # The one canonical nav: same links, same order, on every page.
 NAV_LINKS = (("/", "home"), ("/live", "live"), ("/replay", "replay"),
-             ("/my-flights", "my flights"), ("/stats", "stats"))
+             ("/thermals", "thermals"), ("/my-flights", "my flights"), ("/stats", "stats"))
+
+# Cesium CDN base, shared by every Cesium page (replay, live chrome, thermals).
+CES = "https://cesium.com/downloads/cesiumjs/releases/1.143/Build/Cesium"
 
 
 def nav_html(active=""):
@@ -232,3 +235,49 @@ def header_html(title, intro="", logo_url="", club_name=""):
     club = f'<p class="club">{club_name}</p>' if club_name else ""
     intro_html = f'<p class="intro">{intro}</p>' if intro else ""
     return f'<header class="of-header">{art}{club}<h1>{title}</h1>{intro_html}</header>'
+
+
+# Thermal-hotspot drift columns, shared by the dedicated /thermals page and the toggle
+# overlay on /replay and /live. ognThermalLayer(viewer, hs, fieldElevFt) draws one tilted
+# round cylinder per hotspot (leaning base->top = downwind drift), coloured by mean climb,
+# with a "kt / aircraft-days" label; returns {entities, show(bool)} so callers can toggle it.
+# `hs` = the array from /thermals.json (or a published thermals.json). Starts hidden.
+THERMALS_JS = r"""
+function ognThermalLayer(viewer, hs, fieldElevFt){
+  const FT=0.3048, ents=[];
+  function climbColor(kt){const t=Math.max(0,Math.min(1,(kt-1)/5));
+    return new Cesium.Color(0.15+0.85*t,0.55-0.30*t,1.0-0.90*t,0.34);}
+  function tilt(lon,lat,alt,de,dn,dz){
+    const pos=Cesium.Cartesian3.fromDegrees(lon,lat,alt);
+    const m=Cesium.Matrix4.getMatrix3(Cesium.Transforms.eastNorthUpToFixedFrame(pos),new Cesium.Matrix3());
+    const qf=Cesium.Quaternion.fromRotationMatrix(m);
+    const tgt=Cesium.Cartesian3.normalize(new Cesium.Cartesian3(de,dn,dz),new Cesium.Cartesian3());
+    const z=new Cesium.Cartesian3(0,0,1), ax=Cesium.Cartesian3.cross(z,tgt,new Cesium.Cartesian3());
+    if(Cesium.Cartesian3.magnitude(ax)<1e-6) return qf;
+    Cesium.Cartesian3.normalize(ax,ax);
+    const ang=Math.acos(Cesium.Math.clamp(Cesium.Cartesian3.dot(z,tgt),-1,1));
+    return Cesium.Quaternion.multiply(qf,Cesium.Quaternion.fromAxisAngle(ax,ang),new Cesium.Quaternion());
+  }
+  (hs||[]).forEach(function(h){
+    const cosl=Math.cos(h.lat*Math.PI/180);
+    const baseM=Math.max(0,(h.base_ft-fieldElevFt)*FT);
+    const topM=Math.max(baseM+60,(h.top_ft-fieldElevFt)*FT);
+    const de=(h.top_lon-h.base_lon)*111320*cosl, dn=(h.top_lat-h.base_lat)*111320, dz=topM-baseM;
+    const L=Math.max(60,Math.hypot(Math.hypot(de,dn),dz));
+    const mlon=(h.base_lon+h.top_lon)/2, mlat=(h.base_lat+h.top_lat)/2, malt=(baseM+topM)/2;
+    ents.push(viewer.entities.add({name:"thermal "+h.climb_kt.toFixed(1)+" kt",
+      position:Cesium.Cartesian3.fromDegrees(mlon,mlat,malt),
+      orientation:tilt(mlon,mlat,malt,de,dn,dz),
+      cylinder:{length:L,topRadius:h.radius_m,bottomRadius:h.radius_m,material:climbColor(h.climb_kt),
+        outline:true,outlineColor:Cesium.Color.WHITE.withAlpha(0.35)}}));
+    ents.push(viewer.entities.add({position:Cesium.Cartesian3.fromDegrees(h.top_lon,h.top_lat,topM),
+      label:{text:h.climb_kt.toFixed(1)+" kt / "+h.ac_days,font:"12px sans-serif",fillColor:Cesium.Color.WHITE,
+        showBackground:true,backgroundColor:new Cesium.Color(0,0,0,0.6),
+        disableDepthTestDistance:Number.POSITIVE_INFINITY,pixelOffset:new Cesium.Cartesian2(0,-6),
+        distanceDisplayCondition:new Cesium.DistanceDisplayCondition(0,60000)}}));
+  });
+  ents.forEach(function(e){e.show=false;});
+  return {entities:ents, show:function(on){ents.forEach(function(e){e.show=on;});
+    if(viewer.scene.requestRender) viewer.scene.requestRender();}};
+}
+"""

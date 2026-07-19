@@ -34,8 +34,8 @@ from . import export
 from .config import GRANSDEN
 from .flights import segment
 from .store import Store, year_file
-from .theme import (MAP_HELP_BTN, MAP_HELP_HTML, MAP_HELP_JS, THEME_CSS,
-                    header_html, nav_html)
+from .theme import (CES, MAP_HELP_BTN, MAP_HELP_HTML, MAP_HELP_JS, THEME_CSS,
+                    THERMALS_JS, header_html, nav_html)
 
 REPLAY_TTL = 60  # seconds to cache the generated replay page
 _cache: dict[str, tuple[str, float]] = {}
@@ -1755,6 +1755,48 @@ being tracked live.</p>
 </div></body></html>"""
 
 
+def _thermals_page(data_dir: str = "") -> str:
+    """Standalone map of the cached thermal hotspots (no flight replay). Fetches
+    /thermals.json and draws the shared drift-column layer."""
+    lat, lon, elev = GRANSDEN.lat, GRANSDEN.lon, GRANSDEN.elevation_ft
+    field = CLUB_NAME or "Gransden Lodge"
+    nav = ('<div class="of-topbar"><b>Thermals</b>'
+           '<a href="/">home</a><a href="/live">live</a><a href="/replay">replay</a>'
+           '<a href="/stats">stats</a></div>')
+    return f"""<!DOCTYPE html><html lang="en-GB"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>ognflights - thermals</title>
+<script src="{CES}/Cesium.js"></script><link href="{CES}/Widgets/widgets.css" rel="stylesheet">
+<style>{THEME_CSS}
+html,body,#c{{margin:0;width:100%;height:100%;overflow:hidden;background:#000}}
+#tinfo{{position:fixed;left:10px;bottom:10px;z-index:20;max-width:22rem;padding:.5rem .7rem;font-size:.8rem}}
+</style></head><body class="of-body"><div id="c"></div>
+{nav}
+<div id="tinfo" class="of-panel"><b>Thermal hotspots</b> &middot; recurring climbs over the last 7 days.<br>
+<span class="hint">Column colour = mean climb rate; the lean is the prevailing drift (base &rarr; top).
+Label = mean climb / aircraft-days. <span id="tcount"></span></span></div>
+<script>
+Cesium.Ion.defaultAccessToken="";
+{THERMALS_JS}
+const v=new Cesium.Viewer("c",{{baseLayer:Cesium.ImageryLayer.fromProviderAsync(
+ Cesium.ArcGisMapServerImageryProvider.fromUrl("https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer")),
+ baseLayerPicker:false,geocoder:false,homeButton:false,navigationHelpButton:false,infoBox:false,
+ selectionIndicator:false,animation:false,timeline:false,requestRenderMode:true}});
+v.scene.globe.enableLighting=true;
+v.entities.add({{position:Cesium.Cartesian3.fromDegrees({lon},{lat},0),
+ point:{{pixelSize:9,color:Cesium.Color.YELLOW}},
+ label:{{text:"{field}",font:"13px sans-serif",fillColor:Cesium.Color.YELLOW,
+ pixelOffset:new Cesium.Cartesian2(0,-14)}}}});
+v.camera.setView({{destination:Cesium.Cartesian3.fromDegrees({lon},{lat - 0.05},22000),
+ orientation:{{heading:0,pitch:Cesium.Math.toRadians(-50),roll:0}}}});
+fetch("/thermals.json").then(function(r){{return r.json();}}).then(function(d){{
+ ognThermalLayer(v,d.hotspots,{elev}).show(true);
+ document.getElementById("tcount").textContent=(d.hotspots&&d.hotspots.length)?
+   (d.hotspots.length+" hotspots."):"none computed yet.";
+ v.scene.requestRender();
+}}).catch(function(e){{document.getElementById("tcount").textContent="no data yet.";}});
+</script></body></html>"""
+
+
 def make_handler(status, data_dir, replay_script, models_dir, hub):
     class Handler(http.server.BaseHTTPRequestHandler):
         def log_message(self, *a):
@@ -1899,6 +1941,12 @@ def make_handler(status, data_dir, replay_script, models_dir, hub):
             elif path == "/healthz":
                 code, body = _healthz_payload(status, data_dir)
                 self._send(code, body, "application/json; charset=utf-8")
+            elif path == "/thermals":
+                self._send(200, _thermals_page(data_dir))
+            elif path == "/thermals.json":
+                from . import thermals
+                self._send(200, json.dumps({"hotspots": thermals.load_cached(data_dir)}),
+                           "application/json; charset=utf-8")
             elif path == "/live.json":
                 self._send(200, json.dumps(_live_feed(data_dir)),
                            "application/json; charset=utf-8")

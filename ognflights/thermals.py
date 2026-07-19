@@ -223,6 +223,18 @@ def load(db):
     return [dict(zip(cols, r)) for r in cur.fetchall()]
 
 
+def load_cached(data_dir=None):
+    """Stored hotspots (read-only; never creates/writes), or [] if none computed yet."""
+    p = store_path(data_dir)
+    if not os.path.exists(p):
+        return []
+    db = sqlite3.connect("file:" + os.path.abspath(p) + "?mode=ro", uri=True)
+    try:
+        return load(db)
+    finally:
+        db.close()
+
+
 def recompute(data_dir, site, days=7, params=None):
     """Compute the last `days` days' hotspots and store them. Returns the hotspot list."""
     end = int(time.time())
