@@ -2,18 +2,80 @@
 <html><head><meta charset="utf-8"><title>Gransden flights replay</title>
 <script src="https://cesium.com/downloads/cesiumjs/releases/1.143/Build/Cesium/Cesium.js"></script>
 <link href="https://cesium.com/downloads/cesiumjs/releases/1.143/Build/Cesium/Widgets/widgets.css" rel="stylesheet">
-<style>html,body,#c{margin:0;padding:0;width:100%;height:100%;overflow:hidden}
-#legend{position:absolute;top:8px;left:8px;z-index:10;background:rgba(0,0,0,.6);color:#fff;
-font:12px sans-serif;padding:8px 10px;border-radius:6px;max-height:90vh;overflow:auto}
-#legend b{font-size:14px} .hint{opacity:.6;font-size:11px}
-.sw{display:inline-block;width:12px;height:12px;margin-right:6px;border-radius:2px;vertical-align:middle}
-#daypick{position:fixed;top:8px;left:50%;transform:translateX(-50%);z-index:20;
-background:rgba(0,0,0,.6);color:#fff;padding:5px 9px;border-radius:6px;font:13px sans-serif}
-#daypick select{font:13px sans-serif;background:#222;color:#fff;border:1px solid #555;border-radius:3px}
-#daypick a{color:#8cf;text-decoration:none}
+<style>:root{color-scheme:dark;--bg:#0e111c;--panel:#1a2032;--panel2:#232b44;--line:#333c58;--text:#f2f1e8;--dim:#b6b5a7;--faint:#6b7288;--accent:#d97662;--accent2:#c9604b;--accent-ink:#2b130c;--blue:#81d5cc;--ok:#2ecc71;--warn:#e0a33e;--bad:#e74c3c;--radius:14px;--radius-sm:9px;--overlay:rgba(14,17,28,.82);--overlay-line:rgba(151,162,197,.26);--shadow:0 6px 24px rgba(0,0,0,.25)}
+.of-body,.of-body *{box-sizing:border-box}
+.of-body{margin:0;font:16px/1.55 system-ui,-apple-system,"Segoe UI",sans-serif;color:var(--text);background:var(--bg);background-image:radial-gradient(120% 42rem at 50% -12rem,#28304f 0%,rgba(14,17,28,0) 70%);background-repeat:no-repeat;min-height:100vh}
+.of-wrap{max-width:760px;margin:0 auto;padding:1.4rem 1.1rem 3rem}
+.of-wrap.narrow{max-width:640px}
+.of-nav{font-size:.85rem;color:var(--faint);margin-bottom:1.6rem;display:flex;flex-wrap:wrap;gap:.2rem 1rem}
+.of-nav a{color:var(--dim);text-decoration:none}
+.of-nav a:hover{color:var(--blue)}
+.of-nav a[aria-current]{color:var(--blue);font-weight:600}
+.of-header{text-align:center;margin-bottom:1.7rem}
+.of-header .clublogo{display:block;margin:0 auto .8rem;max-height:64px;max-width:320px;filter:brightness(0) invert(1);opacity:.96}
+.of-header .soar{display:block;margin:0 auto .35rem;width:150px;height:56px}
+.of-header .club{color:var(--dim);font-size:.85rem;font-weight:600;letter-spacing:.14em;text-transform:uppercase;margin:0 0 .3rem}
+.of-header h1{font-size:2rem;letter-spacing:-.02em;margin:0 0 .45rem}
+.of-header .intro{color:var(--dim);margin:0 auto;max-width:32rem;font-size:1.02rem}
+.of-card{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:1.15rem 1.2rem;box-shadow:var(--shadow)}
+a.of-card{display:block;text-decoration:none;color:inherit;transition:border-color .15s,background .15s}
+a.of-card:hover{border-color:var(--blue);background:#1f2639}
+.of-btn-primary{display:inline-block;padding:.6rem .95rem;font:inherit;font-size:.95rem;font-weight:700;color:var(--accent-ink);background:linear-gradient(180deg,#e08770,#cf6450);border:0;border-radius:10px;cursor:pointer;text-decoration:none;transition:filter .12s}
+.of-btn-primary:hover{filter:brightness(1.06)}
+.of-btn-primary:active{filter:brightness(.95)}
+.of-btn-secondary{display:inline-block;padding:.55rem .9rem;font:inherit;font-size:.9rem;font-weight:600;color:var(--blue);background:transparent;border:1.5px solid var(--blue);border-radius:10px;cursor:pointer;text-decoration:none;transition:background .12s,color .12s}
+.of-btn-secondary:hover{background:rgba(129,213,204,.12)}
+.of-foot{color:var(--faint);font-size:.8rem;text-align:center;margin-top:2.2rem;line-height:1.6}
+.of-foot a{color:var(--dim)}
+input[type=checkbox],input[type=radio],input[type=range]{accent-color:var(--accent)}
+.of-topbar{position:fixed;top:10px;left:50%;transform:translateX(-50%);z-index:20;display:flex;flex-wrap:nowrap;justify-content:center;align-items:center;gap:.15rem .6rem;white-space:nowrap;max-width:96vw;background:var(--overlay);border:1px solid var(--overlay-line);color:var(--text);padding:.3rem .85rem;border-radius:16px;font:13px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif;backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px)}
+.of-topbar b{font-weight:700}
+.of-topbar a{color:var(--blue);text-decoration:none}
+.of-topbar a:hover{text-decoration:underline}
+.of-topbar img.nlogo{display:block;max-height:26px;max-width:160px;filter:brightness(0) invert(1);opacity:.96}
+.of-topbar .of-btn-secondary{padding:.08rem .55rem;font-size:12px;font-weight:600;border-width:1px;border-radius:8px}
+.of-topbar input[type=date],.of-topbar select{font:12px system-ui,-apple-system,"Segoe UI",sans-serif;color:var(--text);background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:.12rem .3rem}
+.of-panel{background:var(--overlay);border:1px solid var(--overlay-line);color:var(--text);border-radius:var(--radius-sm);box-shadow:var(--shadow);backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px)}
+.of-panel button{appearance:none;font:12px system-ui,-apple-system,"Segoe UI",sans-serif;cursor:pointer;color:var(--text);background:var(--panel2);border:1px solid var(--line);border-radius:6px;padding:.2rem .55rem}
+.of-panel button:hover{border-color:var(--dim)}
+.of-panel input[type=range]{vertical-align:middle}
+.of-helpwrap{position:fixed;inset:0;z-index:50;display:flex;align-items:center;justify-content:center;padding:1rem;background:rgba(8,10,18,.55)}
+.of-helpwrap[hidden]{display:none}
+.of-help{position:relative;width:100%;max-width:430px;box-sizing:border-box;background:var(--overlay);border:1px solid var(--overlay-line);color:var(--text);border-radius:var(--radius);box-shadow:var(--shadow);padding:1.1rem 1.25rem 1.2rem;font:14px/1.55 system-ui,-apple-system,"Segoe UI",sans-serif;backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px)}
+.of-help h2{margin:0 1.6rem .55rem 0;font-size:1.08rem;letter-spacing:0}
+.of-help ul{margin:0 0 1rem;padding-left:1.15rem;color:var(--dim)}
+.of-help li{margin:.5rem 0}
+.of-help b{color:var(--blue);font-weight:600}
+.of-help-x{position:absolute;top:.4rem;right:.45rem;appearance:none;background:none;border:0;color:var(--dim);font-size:22px;line-height:1;cursor:pointer;padding:.25rem .5rem;border-radius:6px}
+.of-help-x:hover{color:var(--text)}
+@media(max-width:640px){.of-topbar{left:8px;right:8px;transform:none;flex-wrap:wrap;max-width:none;font-size:12px;gap:.1rem .5rem;padding:.28rem .6rem}.of-topbar img.nlogo{max-height:22px;max-width:118px}}
+
+html,body,#c{margin:0;padding:0;width:100%;height:100%;overflow:hidden;background:#000}
+#legend{position:absolute;top:10px;left:10px;z-index:10;color:var(--text);
+font:12px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif;padding:9px 11px;max-height:88vh;overflow:auto}
+@media(max-width:640px){#legend{top:72px;max-height:70vh}
+.cesium-viewer-toolbar{display:none}}
+#legend:empty{display:none}
+#legend b{font-size:14px} .hint{color:var(--dim);font-size:11px}
+#legend a{color:var(--blue)}
+.sw{display:inline-block;width:12px;height:12px;margin-right:6px;border-radius:3px;vertical-align:middle}
 #empty{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);z-index:15;display:none;
-background:rgba(0,0,0,.7);color:#fff;font:15px sans-serif;padding:14px 18px;border-radius:8px}</style>
-</head><body><div id="c"></div><div id="legend"></div><div id="daypick">day: <select id="daysel"></select> <a href="https://github.com/8none1/ognflights" target="_blank" rel="noopener">about</a></div><div id="empty">No flights recorded for this day.</div>
+font:15px system-ui,-apple-system,"Segoe UI",sans-serif;padding:14px 18px}
+#daybtn{cursor:pointer}
+#cal{position:absolute;top:100%;left:0;margin-top:6px;padding:8px 10px;width:232px;z-index:25}
+#cal[hidden]{display:none}
+#cal .calnav{display:flex;align-items:center;justify-content:space-between;margin-bottom:5px}
+#cal .calnav .mlabel{font-weight:700}
+#cal table{border-collapse:collapse;width:100%}
+#cal th{color:var(--faint);font-weight:600;font-size:10px;padding:2px 0}
+#cal td{padding:1px}
+#cal td button{width:100%;height:24px;padding:0;border:1px solid transparent;background:transparent;
+color:var(--faint);border-radius:5px;font:12px system-ui,sans-serif}
+#cal td button.has{color:var(--text);font-weight:700;background:var(--panel);cursor:pointer}
+#cal td button.has:hover{border-color:var(--blue)}
+#cal td button.sel{background:var(--accent);color:var(--accent-ink);border-color:var(--accent)}</style>
+</head><body><div id="c"></div><div id="legend" class="of-panel"></div><div id="daypick" class="of-topbar"><button id="daybtn" type="button" aria-haspopup="true" aria-expanded="false">day &#9662;</button> <a href="https://github.com/8none1/ognflights" target="_blank" rel="noopener">about</a> <a href="#" id="maphelpbtn" class="of-btn-secondary" title="How to move around the 3D view">?</a><div id="cal" class="of-panel" hidden></div></div><div id="empty" class="of-panel">No flights recorded for this day.</div>
+<div id="maphelp" class="of-helpwrap" hidden><div class="of-help" role="dialog" aria-modal="true" aria-labelledby="maphelptitle"><button type="button" class="of-help-x" id="maphelpx" aria-label="Close help">&#215;</button><h2 id="maphelptitle">Moving around the 3D view</h2><ul><li><b>Left-click and drag</b> to pan and spin the view around.</li><li><b>Scroll the mouse wheel</b> to zoom in and out. <b>Right-click and drag</b> up or down also zooms, or pinch on a trackpad.</li><li><b>Hold Ctrl and left-click and drag</b> (or <b>middle-click and drag</b>) to tilt the camera and change the viewing angle.</li></ul><button type="button" class="of-btn-primary" id="maphelpok">Got it</button></div></div>
 <script>
 const INLINE_DATA=null;   // inlined DATA (inline mode) or null (external-data mode)
 const EXTERNAL=true;     // true = fetch DATA (and manifest, in public build) at runtime
@@ -21,9 +83,9 @@ const DATABASE="https://raw.githubusercontent.com/8none1/ognflights/public-data/
 const DAYPICKER=true;   // true = show the day-picker control and load manifest.json
 const HOME={"lon": -0.10937, "lat": 52.09717, "height": 6000.0, "heading": 0.0, "pitch": -30.0};
 const MYAW={"dr400": 0.0, "glider": 0.0};             // {modelKey: radians} yaw offset per model; tune with number keys + [ ]
-const TRAILMODE="active";
-const SPEEDCOL=false;
-const SINGLELINK="2026-07-06"; // day string to link each aircraft to its single-aircraft view, or null
+const TRAILMODE="current";
+const COLOURMODE="off";   // initial trail colouring: "off" | "speed" | "climb"
+const SINGLELINK="2026-07-19"; // day string to link each aircraft to its single-aircraft view, or null
 const PATHRES=3.0;
 const TAILSECS=60;  // sliding "tail" trail: seconds of track kept behind the aircraft
 let tailSecs=TAILSECS;        // live-adjustable via the settings slider
@@ -51,6 +113,13 @@ const SPD_LO=30, SPD_HI=110;   // knots mapped across the speed colour ramp
 function speedColor(kt){
   const t=Math.max(0,Math.min(1,(kt-SPD_LO)/(SPD_HI-SPD_LO)));
   const st=[[0.12,0.12,0.5],[0.0,0.8,0.5],[1.0,1.0,0.5]];  // dim blue -> green -> bright yellow
+  const seg=t*2, i=Math.min(1,Math.floor(seg)), f=seg-i, a=st[i], b=st[i+1]||st[i];
+  return new Cesium.Color(a[0]+(b[0]-a[0])*f, a[1]+(b[1]-a[1])*f, a[2]+(b[2]-a[2])*f, 0.95);
+}
+const CLB_LO=-6, CLB_HI=6;   // knots (sink..climb) across the climb colour ramp
+function climbColor(kt){
+  const t=Math.max(0,Math.min(1,(kt-CLB_LO)/(CLB_HI-CLB_LO)));
+  const st=[[0.15,0.45,1.0],[0.80,0.80,0.80],[1.0,0.28,0.10]];  // cold blue (sink) -> neutral -> hot red (climb)
   const seg=t*2, i=Math.min(1,Math.floor(seg)), f=seg-i, a=st[i], b=st[i+1]||st[i];
   return new Cesium.Color(a[0]+(b[0]-a[0])*f, a[1]+(b[1]-a[1])*f, a[2]+(b[2]-a[2])*f, 0.95);
 }
@@ -93,15 +162,15 @@ function fmtReadout(cs, ft, kt){
 }
 
 // --- per-day render state: everything built from a DATA dict, torn down on day change ---
-let trails=[], planes=[], speedPrims={};
+let trails=[], planes=[], colFlights=[];   // colFlights: per-flight progressive colour trail
 let aircraftOn=[], flightAi=[];
 
 function teardown(){
   // remove all entities + primitives added for the previous day so switching days leaks nothing
   planes.forEach(p=>viewer.entities.remove(p));
   trails.forEach(t=>viewer.entities.remove(t));
-  Object.keys(speedPrims).forEach(ai=>viewer.scene.primitives.remove(speedPrims[ai]));
-  trails=[]; planes=[]; speedPrims={};
+  colFlights.forEach(cf=>{ if(cf.prim) viewer.scene.primitives.remove(cf.prim); });
+  trails=[]; planes=[]; colFlights=[];
   aircraftOn=[]; flightAi=[];
   viewer.scene.requestRender();
 }
@@ -116,7 +185,6 @@ function renderData(DATA){
   }
   if(empty)empty.style.display="none";
   let tmin=null,tmax=null;
-  const speedInstances={};   // aircraft index -> [GeometryInstance]; batched into one primitive per aircraft
   DATA.flights.forEach(fl=>{
     const pos=new Cesium.SampledPositionProperty();
     fl.samples.forEach(s=>pos.addSample(Cesium.JulianDate.fromIso8601(s[0]),
@@ -174,28 +242,36 @@ function renderData(DATA){
     trails.push(viewer.entities.add({name:fl.name+" trail",
       polyline:{positions:Cesium.Cartesian3.fromDegreesArrayHeights(flat),
       width:1, material:col.withAlpha(0.35)}}));
-    (speedInstances[fl.ai]=speedInstances[fl.ai]||[]).push(new Cesium.GeometryInstance({geometry:new Cesium.PolylineGeometry({
-        positions:Cesium.Cartesian3.fromDegreesArrayHeights(flat), width:3,
-        vertexFormat:Cesium.PolylineColorAppearance.VERTEX_FORMAT,
-        colors:(fl.spd||[]).map(speedColor), colorsPerVertex:true, arcType:Cesium.ArcType.NONE})}));
-  });
-  // one batched speed-trail primitive per aircraft: draw calls drop from ~1/flight to ~1/aircraft,
-  // while still allowing per-aircraft show/hide.
-  Object.keys(speedInstances).forEach(ai=>{
-    speedPrims[ai]=viewer.scene.primitives.add(new Cesium.Primitive({
-      geometryInstances:speedInstances[ai],
-      appearance:new Cesium.PolylineColorAppearance({translucent:true}), show:false}));
+    // Colour trails are drawn PROGRESSIVELY (revealed up to the playback clock) by
+    // updateColourTrails(), so the coloured line is the single trail that grows behind the
+    // glider - no static full-track overlay and no second solid comet-path. Here we just
+    // precompute each flight's geometry, the per-vertex colours (speed + climb), and the
+    // sample times the reveal indexes into.
+    colFlights.push({
+      ai:fl.ai,
+      times:fl.samples.map(s=>Cesium.JulianDate.fromIso8601(s[0])),
+      pos:Cesium.Cartesian3.fromDegreesArrayHeights(flat),
+      spdCol:(fl.spd||[]).map(speedColor),
+      climbCol:(fl.climb||[]).map(climbColor),
+      prim:null, key:null});
   });
   const leg=[`<b>${DATA.title}</b><br><span class="hint">${DATA.flights.length} flights, ${DATA.legend.length} aircraft</span><br>`,
     `<div style="margin:4px 0;user-select:none">trails:
-      <label><input type="radio" name="tm" value="full"> full</label>
-      <label><input type="radio" name="tm" value="active"> active</label>
+      <label><input type="radio" name="tm" value="all"> all flights</label>
+      <label><input type="radio" name="tm" value="current"> current flight</label>
       <label><input type="radio" name="tm" value="tail"> tail</label>
       <label><input type="radio" name="tm" value="off"> off</label>
-      <label style="cursor:pointer;margin-left:8px"><input type="checkbox" id="speedcol"> by speed</label>
+      <span style="margin-left:8px">colour:</span>
+      <label><input type="radio" name="cm" value="off"> none</label>
+      <label><input type="radio" name="cm" value="speed"> speed</label>
+      <label><input type="radio" name="cm" value="climb"> climb</label>
       <div id="speedscale" style="display:none;margin:3px 0">
         <span style="display:inline-block;width:130px;height:9px;border-radius:2px;background:linear-gradient(90deg,#1f1f80,#00cc80,#ffff80)"></span>
         <br><span class="hint">slow ${SPD_LO} &rarr; ${SPD_HI} kt fast</span></div>
+      <div id="climbscale" style="display:none;margin:3px 0">
+        <span style="display:inline-block;width:130px;height:9px;border-radius:2px;background:linear-gradient(90deg,#2673ff,#cccccc,#ff481a)"></span>
+        <br><span class="hint">sink ${CLB_LO} &rarr; +${CLB_HI} kt climb</span></div>
+      <br><label style="cursor:pointer"><input type="checkbox" id="thermals"> thermal hotspots</label>
       <br><label style="cursor:pointer"><input type="checkbox" id="placenames"> place names</label>
       <br><button id="resetview" style="cursor:pointer;margin-top:4px">reset view</button>
       <details id="settings" style="margin-top:6px">
@@ -208,17 +284,20 @@ function renderData(DATA){
           </label>
         </div>
       </details></div>`];
-  if(DATA.legend.length>1) leg.push(`<div class="hint" style="margin-top:4px">show: <a href="#" id="acAll" style="color:#8cf">all</a> / <a href="#" id="acNone" style="color:#8cf">none</a></div>`);
-  DATA.legend.forEach((a,i)=>leg.push(`<div style="display:block"><label style="cursor:pointer"><input type="checkbox" class="acft" data-ai="${i}" checked> <span class="sw" style="background:${a.color}"></span>${a.label} (${a.n})</label>${SINGLELINK&&a.key?` <a href="#" class="single" data-key="${encodeURIComponent(a.key)}" style="color:#8cf;font-size:11px">single &rarr;</a>`:""}</div>`));
+  if(DATA.legend.length>1) leg.push(`<div class="hint" style="margin-top:4px">show: <a href="#" id="acAll">all</a> / <a href="#" id="acNone">none</a></div>`);
+  DATA.legend.forEach((a,i)=>leg.push(`<div style="display:block"><label style="cursor:pointer"><input type="checkbox" class="acft" data-ai="${i}" checked> <span class="sw" style="background:${a.color}"></span>${a.label} (${a.n})</label>${SINGLELINK&&a.key?` <a href="#" class="single" data-key="${encodeURIComponent(a.key)}" style="font-size:11px">single &rarr;</a>`:""}</div>`));
   leg.push(`<div id="models" class="hint" style="margin-top:6px"></div>`);
-  leg.push(`<div class="hint" style="margin-top:6px">3D models: <a style="color:#8cf" href="https://github.com/Ysurac/FlightAirMap-3dmodels">FlightAirMap</a> (GPLv2)</div>`);
+  leg.push(`<div class="hint" style="margin-top:6px">3D models: <a href="https://github.com/Ysurac/FlightAirMap-3dmodels">FlightAirMap</a> (GPLv2)</div>`);
   document.getElementById("legend").innerHTML=leg.join("");
 
   // per-aircraft visibility (index matches DATA.legend); each flight knows its aircraft via fl.ai
   aircraftOn=DATA.legend.map(()=>true);
   flightAi=DATA.flights.map(f=>f.ai);
-  // trail modes: full = whole track; active = flown tail of airborne gliders; off = none.
-  // "by speed" recolours the full track (slow=dim blue, fast=bright yellow); active tail stays per-aircraft.
+  // trail modes: all = every flight that day (accumulates as the day plays); current = only the
+  // flight in progress at the playback time (hidden once it lands); tail = sliding window behind
+  // the current flight; off = none. colour "speed"/"climb" replaces the trail with a single
+  // progressive coloured line that draws as the glider flies (speed: slow blue->fast yellow;
+  // climb: sink blue->climb red); "off" keeps the per-aircraft solid trail.
   document.querySelectorAll('input.acft').forEach(cb=>cb.addEventListener("change",e=>{
     aircraftOn[+e.target.dataset.ai]=e.target.checked; applyTrails();
   }));
@@ -232,12 +311,11 @@ function renderData(DATA){
     document.querySelector('input[name=tm][value="tail"]').checked=true;
     applyTrails();
   });
-  document.getElementById("speedcol").addEventListener("change",function(){
-    if(this.checked) document.querySelector('input[name=tm][value="full"]').checked=true;  // speed colours the full track
-    applyTrails();
-  });
+  document.querySelectorAll('input[name=cm]').forEach(r=>r.addEventListener("change",applyTrails));
+  const thBox=document.getElementById("thermals");
+  if(thBox){ thBox.checked=ognThermalState.on; thBox.addEventListener("change",e=>setThermals(e.target.checked)); }
   document.querySelector('input[name=tm][value="'+TRAILMODE+'"]').checked=true;
-  document.getElementById("speedcol").checked=SPEEDCOL;
+  document.querySelector('input[name=cm][value="'+COLOURMODE+'"]').checked=true;
   applyTrails();
   document.getElementById("nightsky").addEventListener("change",e=>setNight(e.target.checked));
   setNight(true);
@@ -270,16 +348,81 @@ function renderData(DATA){
 
 function applyTrails(){
   const m=document.querySelector('input[name=tm]:checked').value;
-  const speed=document.getElementById("speedcol").checked;
+  const cm=document.querySelector('input[name=cm]:checked').value;   // off | speed | climb
+  const coloured=cm!=="off";
+  // Colour on: the single progressive coloured trail (updateColourTrails) IS the trail, so
+  // hide the solid comet-path and the static per-aircraft line to avoid a double trail.
   // "tail" = short sliding window behind the aircraft; "active"/"full" = whole flown tail.
-  planes.forEach((p,i)=>{const on=aircraftOn[flightAi[i]]; p.show=on; p.path.show=on && m!=="off";
+  planes.forEach((p,i)=>{const on=aircraftOn[flightAi[i]]; p.show=on;
+    p.path.show=on && m!=="off" && !coloured;
     p.path.trailTime=(m==="tail")?tailSecs:100000;
     if(p.label) p.label.show=readoutsOn;});   // entity.show already gates a hidden aircraft's label
-  trails.forEach((t,i)=>{t.show=aircraftOn[flightAi[i]] && m==="full" && !speed;});
-  Object.keys(speedPrims).forEach(ai=>{speedPrims[ai].show=aircraftOn[+ai] && m==="full" && speed;});
-  document.getElementById("speedscale").style.display=(m==="full"&&speed)?"block":"none";
-  viewer.scene.requestRender();   // requestRenderMode is on, so ask for a redraw after toggling
+  trails.forEach((t,i)=>{t.show=aircraftOn[flightAi[i]] && m==="all" && !coloured;});
+  document.getElementById("speedscale").style.display=(coloured&&cm==="speed"&&m!=="off")?"block":"none";
+  document.getElementById("climbscale").style.display=(coloured&&cm==="climb"&&m!=="off")?"block":"none";
+  updateColourTrails(true);         // apply the colour-trail visibility/window immediately
+  viewer.scene.requestRender();     // requestRenderMode is on, so ask for a redraw after toggling
 }
+
+// binary search over an ascending JulianDate[] ----------------------------------------------
+function jdCountLE(times, t){       // number of samples with time <= t
+  let lo=0, hi=times.length;
+  while(lo<hi){const m=(lo+hi)>>1; if(Cesium.JulianDate.lessThanOrEquals(times[m],t)) lo=m+1; else hi=m;}
+  return lo;
+}
+function jdFirstGE(times, t){       // first index with time >= t
+  let lo=0, hi=times.length;
+  while(lo<hi){const m=(lo+hi)>>1; if(Cesium.JulianDate.lessThan(times[m],t)) lo=m+1; else hi=m;}
+  return lo;
+}
+// Progressive colour trails: reveal each flight's coloured track up to the playback clock, so a
+// single trail draws behind the glider as it flies (full/active persist from the start; tail keeps
+// the last tailSecs). Per-vertex colour needs the static primitive, which cannot itself follow the
+// clock, so we rebuild a flight's primitive only when its visible [start,end) sample window changes,
+// throttled to ~120ms wall time so a fast multiplier does not thrash the GPU. The rebuilt geometry
+// is created SYNCHRONOUSLY (asynchronous:false) so the new primitive is ready the instant the old
+// one is removed - otherwise the async build leaves a frame or two drawing nothing, i.e. flicker.
+let _colLastWall=0;
+function updateColourTrails(force){
+  const cmEl=document.querySelector('input[name=cm]:checked');
+  if(!cmEl) return;                 // legend not built yet (initial load)
+  const wall=Date.now();
+  if(!force && wall-_colLastWall<120) return;
+  _colLastWall=wall;
+  const cm=cmEl.value, m=document.querySelector('input[name=tm]:checked').value;
+  const now=viewer.clock.currentTime;
+  let changed=false;
+  colFlights.forEach(cf=>{
+    let on = cm!=="off" && m!=="off" && aircraftOn[cf.ai];
+    if(on && (m==="current" || m==="tail")){
+      // "current"/"tail" show only the flight in progress at the playback time; "all" accumulates
+      const t0=cf.times[0], t1=cf.times[cf.times.length-1];
+      on = Cesium.JulianDate.lessThanOrEquals(t0,now) && Cesium.JulianDate.lessThanOrEquals(now,t1);
+    }
+    if(!on){ if(cf.prim) cf.prim.show=false; return; }
+    const end=jdCountLE(cf.times, now);
+    const start=(m==="tail")
+      ? jdFirstGE(cf.times, Cesium.JulianDate.addSeconds(now,-tailSecs,new Cesium.JulianDate()))
+      : 0;
+    const key=cm+":"+start+":"+end;
+    if(key===cf.key){ if(cf.prim) cf.prim.show=true; return; }
+    cf.key=key;
+    if(cf.prim){ viewer.scene.primitives.remove(cf.prim); cf.prim=null; }
+    if(end-start<2) return;         // need at least one segment to draw
+    const cols=(cm==="climb"?cf.climbCol:cf.spdCol).slice(start,end);
+    cf.prim=viewer.scene.primitives.add(new Cesium.Primitive({
+      geometryInstances:new Cesium.GeometryInstance({geometry:new Cesium.PolylineGeometry({
+        positions:cf.pos.slice(start,end), width:3,
+        vertexFormat:Cesium.PolylineColorAppearance.VERTEX_FORMAT,
+        colors:cols, colorsPerVertex:true, arcType:Cesium.ArcType.NONE})}),
+      appearance:new Cesium.PolylineColorAppearance({translucent:true}),
+      asynchronous:false}));   // build now so it renders the instant the old primitive is removed
+    changed=true;
+  });
+  if(changed) viewer.scene.requestRender();
+}
+// drive the reveal off the playback clock (one listener for the whole page)
+viewer.clock.onTick.addEventListener(function(){ updateColourTrails(false); });
 function setAllAircraft(on){
   aircraftOn.fill(on);
   document.querySelectorAll('input.acft').forEach(cb=>{cb.checked=on;});
@@ -296,8 +439,8 @@ function setNight(on){
 
 // hover tooltip: show the aircraft name/registration under the cursor
 const _tip=document.createElement("div");
-_tip.style.cssText="position:fixed;z-index:30;pointer-events:none;display:none;background:rgba(0,0,0,.8);"
-  +"color:#fff;font:12px sans-serif;padding:2px 7px;border-radius:4px;white-space:nowrap";
+_tip.style.cssText="position:fixed;z-index:30;pointer-events:none;display:none;background:var(--overlay);"
+  +"border:1px solid var(--overlay-line);color:var(--text);font:12px system-ui,sans-serif;padding:2px 7px;border-radius:5px;white-space:nowrap";
 document.body.appendChild(_tip);
 new Cesium.ScreenSpaceEventHandler(viewer.scene.canvas).setInputAction(function(mv){
   const p=viewer.scene.pick(mv.endPosition);
@@ -328,7 +471,7 @@ function renderModels(DATA){
   const el=document.getElementById("models");
   if(!el)return;
   el.innerHTML="models (press 1-9 to pick, [ ] to yaw):<br>"+
-    MK.map((k,i)=>`<span style="${k===selM?'color:#8cf;font-weight:bold':''}">${i+1}. ${DATA.models[k].label}: ${Math.round(Cesium.Math.toDegrees(MYAW[k]||0))}&deg;</span>`).join("<br>");
+    MK.map((k,i)=>`<span style="${k===selM?'color:var(--accent);font-weight:bold':''}">${i+1}. ${DATA.models[k].label}: ${Math.round(Cesium.Math.toDegrees(MYAW[k]||0))}&deg;</span>`).join("<br>");
 }
 window.addEventListener("keydown",e=>{
   if(/^[1-9]$/.test(e.key)){const i=+e.key-1; if(i<MK.length){selM=MK[i]; renderModels({models:curModels});} return;}
@@ -371,37 +514,201 @@ function filterAddress(DATA, addr){
   return {title:DATA.legend[li].label+" "+(DATA.title||""),
           flights, legend:[DATA.legend[li]], models:DATA.models};
 }
+// Client-side single-FLIGHT filter: ?t=<epoch seconds or HH:MM UTC> keeps only the
+// flight whose airborne interval contains that moment (the "Watch your flight" finder
+// links here so a visitor sees just their flight, not the aircraft's whole day). If no
+// interval contains it, the nearest take-off within 15 minutes is used; failing that
+// the data is left untouched. Without ?t= behaviour is unchanged.
+function filterTime(DATA){
+  const tp=new URLSearchParams(location.search).get("t");
+  if(!tp||!DATA||!DATA.flights||!DATA.flights.length) return DATA;
+  let t=null;
+  if(/^\d{9,}$/.test(tp)) t=parseInt(tp,10);
+  else if(/^\d{1,2}:\d{2}$/.test(tp)){
+    const day=DATA.flights[0].samples[0][0].slice(0,10);
+    t=Date.parse(day+"T"+tp.padStart(5,"0")+":00Z")/1000;
+  }
+  if(t==null||!isFinite(t)) return DATA;
+  const bounds=f=>[Date.parse(f.samples[0][0])/1000,
+                   Date.parse(f.samples[f.samples.length-1][0])/1000];
+  let keep=DATA.flights.filter(f=>{const b=bounds(f); return b[0]<=t&&t<=b[1];});
+  if(!keep.length){
+    let best=null,bd=15*60+1;
+    for(const f of DATA.flights){const d=Math.abs(bounds(f)[0]-t); if(d<bd){bd=d;best=f;}}
+    if(best) keep=[best];
+  }
+  if(!keep.length||keep.length===DATA.flights.length) return DATA;
+  return Object.assign({},DATA,{flights:keep});
+}
 async function loadDay(day){
   const addr=new URLSearchParams(location.search).get("address");
   try{
     const DATA=await fetchJson(dataUrl(day+".json"));
-    renderData(filterAddress(DATA, addr));
+    renderData(filterTime(filterAddress(DATA, addr)));
   }catch(err){
     console.error("failed to load day",day,err);
     renderData({title:day, flights:[], legend:[], models:{}});
   }
 }
+// --- custom month calendar (public day picker) --------------------------------------------
+// Only days that actually have flights are clickable/bold; empty days are faint + disabled.
+// The manifest can grow indefinitely, so a month grid scales far better than a flat list.
+let CAL_DAYS=new Set();      // "YYYY-MM-DD" strings that have flights
+let CAL_MIN="", CAL_MAX="";  // earliest / latest flight day (bounds month navigation)
+let calY=0, calM=0;          // month currently shown (calM is 0-11)
+let calSel="";               // currently-selected day
+
+function ymd(y,m,d){ return y+"-"+String(m+1).padStart(2,"0")+"-"+String(d).padStart(2,"0"); }
+function monthStr(y,m){ return y+"-"+String(m+1).padStart(2,"0"); }
+
+function renderCal(){
+  const cal=document.getElementById("cal");
+  const first=new Date(Date.UTC(calY,calM,1));
+  const lead=(first.getUTCDay()+6)%7;                        // leading blanks (Mon=0..Sun=6)
+  const dim=new Date(Date.UTC(calY,calM+1,0)).getUTCDate();  // days in this month
+  const label=first.toLocaleString("en-GB",{month:"long",year:"numeric",timeZone:"UTC"});
+  const cur=monthStr(calY,calM);
+  const canPrev=cur>CAL_MIN.slice(0,7), canNext=cur<CAL_MAX.slice(0,7);
+  const cells=[];
+  for(let i=0;i<lead;i++) cells.push("<td></td>");
+  for(let d=1;d<=dim;d++){
+    const ds=ymd(calY,calM,d), has=CAL_DAYS.has(ds);
+    const cls=(has?"has":"")+(ds===calSel?" sel":"");
+    cells.push(`<td><button data-d="${ds}" class="${cls}"${has?"":" disabled"}>${d}</button></td>`);
+  }
+  while(cells.length%7) cells.push("<td></td>");
+  let rows="";
+  for(let i=0;i<cells.length;i+=7) rows+="<tr>"+cells.slice(i,i+7).join("")+"</tr>";
+  cal.innerHTML=
+    `<div class="calnav"><button id="calprev"${canPrev?"":" disabled"}>&lsaquo;</button>`+
+    `<span class="mlabel">${label}</span><button id="calnext"${canNext?"":" disabled"}>&rsaquo;</button></div>`+
+    `<table><thead><tr><th>Mo</th><th>Tu</th><th>We</th><th>Th</th><th>Fr</th><th>Sa</th><th>Su</th></tr></thead>`+
+    `<tbody>${rows}</tbody></table>`;
+}
+function openCal(show){
+  const cal=document.getElementById("cal");
+  if(show===undefined) show=cal.hidden;   // no arg = toggle
+  cal.hidden=!show;
+  document.getElementById("daybtn").setAttribute("aria-expanded", show?"true":"false");
+  if(show){ if(calSel){ calY=+calSel.slice(0,4); calM=+calSel.slice(5,7)-1; } renderCal(); }
+}
+function stepMonth(delta){
+  const d=new Date(Date.UTC(calY,calM+delta,1));
+  calY=d.getUTCFullYear(); calM=d.getUTCMonth(); renderCal();
+}
+function pickDay(ds){
+  calSel=ds;
+  document.getElementById("daybtn").innerHTML=ds+" &#9662;";
+  const p=new URLSearchParams(location.search);
+  p.set("day",ds); p.delete("address");
+  history.replaceState(null,"","?"+p.toString());
+  openCal(false);
+  loadDay(ds);
+}
+
 async function boot(){
-  if(!EXTERNAL){ renderData(INLINE_DATA); return; }
+  if(!EXTERNAL){ renderData(filterTime(INLINE_DATA)); return; }
   if(!DAYPICKER){ await loadDay(new URLSearchParams(location.search).get("day")||""); return; }
-  // public build: manifest.json -> day picker -> newest day (or ?day= override)
+  // public build: manifest.json -> calendar -> newest day (or ?day= override)
   let manifest;
   try{ manifest=await fetchJson(dataUrl("manifest.json")); }
   catch(err){ console.error("manifest load failed",err); renderData({title:"", flights:[], legend:[], models:{}}); return; }
   const days=(manifest.days||[]).map(d=>typeof d==="string"?d:d.day);
-  const sel=document.getElementById("daysel");
-  sel.innerHTML=days.map(d=>`<option value="${d}">${d}</option>`).join("");
-  const params=new URLSearchParams(location.search);
-  let want=params.get("day");
-  if(!want||days.indexOf(want)<0)want=days[0];
-  if(want){ sel.value=want; await loadDay(want); }
-  else renderData({title:"", flights:[], legend:[], models:{}});
-  sel.addEventListener("change",()=>{
-    const p=new URLSearchParams(location.search);
-    p.set("day",sel.value); p.delete("address");
-    history.replaceState(null,"","?"+p.toString());
-    loadDay(sel.value);
+  if(!days.length){ renderData({title:"", flights:[], legend:[], models:{}}); return; }
+  CAL_DAYS=new Set(days);
+  const sorted=days.slice().sort();                 // "YYYY-MM-DD" sorts chronologically
+  CAL_MIN=sorted[0]; CAL_MAX=sorted[sorted.length-1];
+  let want=new URLSearchParams(location.search).get("day");
+  if(!want||!CAL_DAYS.has(want)) want=CAL_MAX;       // default to the newest day
+  calSel=want; calY=+want.slice(0,4); calM=+want.slice(5,7)-1;
+  document.getElementById("daybtn").innerHTML=want+" &#9662;";
+  await loadDay(want);
+  document.getElementById("daybtn").addEventListener("click",e=>{ e.stopPropagation(); openCal(); });
+  document.getElementById("cal").addEventListener("click",e=>{
+    const b=e.target.closest("button"); if(!b) return;
+    if(b.id==="calprev"){ if(!b.disabled) stepMonth(-1); return; }
+    if(b.id==="calnext"){ if(!b.disabled) stepMonth(1); return; }
+    if(b.dataset.d && !b.disabled) pickDay(b.dataset.d);
   });
+  document.addEventListener("click",e=>{ if(!e.target.closest("#daypick")) openCal(false); });
 }
 boot();
+
+// --- thermal-hotspots overlay (shared renderer; lazy-loaded on first toggle) ------------
+
+function ognThermalLayer(viewer, hs, fieldElevFt){
+  const FT=0.3048, ents=[];
+  function climbColor(kt){const t=Math.max(0,Math.min(1,(kt-1)/5));
+    return new Cesium.Color(0.15+0.85*t,0.55-0.30*t,1.0-0.90*t,0.34);}
+  function tilt(lon,lat,alt,de,dn,dz){
+    const pos=Cesium.Cartesian3.fromDegrees(lon,lat,alt);
+    const m=Cesium.Matrix4.getMatrix3(Cesium.Transforms.eastNorthUpToFixedFrame(pos),new Cesium.Matrix3());
+    const qf=Cesium.Quaternion.fromRotationMatrix(m);
+    const tgt=Cesium.Cartesian3.normalize(new Cesium.Cartesian3(de,dn,dz),new Cesium.Cartesian3());
+    const z=new Cesium.Cartesian3(0,0,1), ax=Cesium.Cartesian3.cross(z,tgt,new Cesium.Cartesian3());
+    if(Cesium.Cartesian3.magnitude(ax)<1e-6) return qf;
+    Cesium.Cartesian3.normalize(ax,ax);
+    const ang=Math.acos(Cesium.Math.clamp(Cesium.Cartesian3.dot(z,tgt),-1,1));
+    return Cesium.Quaternion.multiply(qf,Cesium.Quaternion.fromAxisAngle(ax,ang),new Cesium.Quaternion());
+  }
+  (hs||[]).forEach(function(h){
+    const cosl=Math.cos(h.lat*Math.PI/180);
+    const baseM=Math.max(0,(h.base_ft-fieldElevFt)*FT);
+    const topM=Math.max(baseM+60,(h.top_ft-fieldElevFt)*FT);
+    const de=(h.top_lon-h.base_lon)*111320*cosl, dn=(h.top_lat-h.base_lat)*111320, dz=topM-baseM;
+    const L=Math.max(60,Math.hypot(Math.hypot(de,dn),dz));
+    const mlon=(h.base_lon+h.top_lon)/2, mlat=(h.base_lat+h.top_lat)/2, malt=(baseM+topM)/2;
+    ents.push(viewer.entities.add({name:"thermal "+h.climb_kt.toFixed(1)+" kt",
+      position:Cesium.Cartesian3.fromDegrees(mlon,mlat,malt),
+      orientation:tilt(mlon,mlat,malt,de,dn,dz),
+      cylinder:{length:L,topRadius:h.radius_m,bottomRadius:h.radius_m,material:climbColor(h.climb_kt),
+        outline:true,outlineColor:Cesium.Color.WHITE.withAlpha(0.35)}}));
+    ents.push(viewer.entities.add({position:Cesium.Cartesian3.fromDegrees(h.top_lon,h.top_lat,topM),
+      label:{text:h.climb_kt.toFixed(1)+" kt / "+h.ac_days,font:"12px sans-serif",fillColor:Cesium.Color.WHITE,
+        showBackground:true,backgroundColor:new Cesium.Color(0,0,0,0.6),
+        disableDepthTestDistance:Number.POSITIVE_INFINITY,pixelOffset:new Cesium.Cartesian2(0,-6),
+        distanceDisplayCondition:new Cesium.DistanceDisplayCondition(0,60000)}}));
+  });
+  ents.forEach(function(e){e.show=false;});
+  return {entities:ents, show:function(on){ents.forEach(function(e){e.show=on;});
+    if(viewer.scene.requestRender) viewer.scene.requestRender();}};
+}
+
+let ognThermalState={layer:null,on:false};
+function setThermals(on){
+  ognThermalState.on=on;
+  if(on && !ognThermalState.layer){
+    fetch(dataUrl("thermals.json")).then(function(r){return r.json();}).then(function(d){
+      ognThermalState.layer=ognThermalLayer(viewer,d.hotspots,FIELD_ELEV_FT);
+      ognThermalState.layer.show(ognThermalState.on);
+    }).catch(function(e){});
+  } else if(ognThermalState.layer){ ognThermalState.layer.show(on); }
+}
+
+// map-controls help overlay (shared: see ognflights/theme.py)
+(function(){
+  var KEY="ogn.maphelp.dismissed";
+  var wrap=document.getElementById("maphelp");
+  if(!wrap) return;
+  function openHelp(){ wrap.hidden=false; }
+  function closeHelp(){
+    wrap.hidden=true;
+    try{ localStorage.setItem(KEY,"1"); }catch(e){}
+  }
+  document.getElementById("maphelpx").addEventListener("click",closeHelp);
+  document.getElementById("maphelpok").addEventListener("click",closeHelp);
+  wrap.addEventListener("click",function(e){ if(e.target===wrap) closeHelp(); });
+  document.addEventListener("keydown",function(e){
+    if(e.key==="Escape" && !wrap.hidden) closeHelp();
+  });
+  // reopen via the topbar "?" button; delegated because the /replay topbar is
+  // server-injected after this script in document order.
+  document.addEventListener("click",function(e){
+    var b=e.target.closest ? e.target.closest("#maphelpbtn") : null;
+    if(b){ e.preventDefault(); openHelp(); }
+  });
+  var seen=false;
+  try{ seen=localStorage.getItem(KEY)==="1"; }catch(e){ seen=true; }
+  if(!seen && !window.OF_HELP_SUPPRESS) openHelp();
+})();
 </script></body></html>
