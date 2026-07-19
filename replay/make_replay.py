@@ -646,9 +646,11 @@ async function boot(){
   });
   document.addEventListener("click",e=>{ if(!e.target.closest("#daypick")) openCal(false); });
 }
-boot();
-
 // --- thermal-hotspots overlay (shared renderer; lazy-loaded on first toggle) ------------
+// Declared BEFORE boot(): the inline (private) replay runs renderData() synchronously
+// inside boot(), and its legend wiring reads ognThermalState.on - if this were declared
+// after boot() that read would hit the let's temporal dead zone, throw, and abort
+// renderData before it sets the playback clock (leaving the timeline at "now").
 __THERMALSJS__
 let ognThermalState={layer:null,on:false};
 function setThermals(on){
@@ -660,6 +662,8 @@ function setThermals(on){
     }).catch(function(e){});
   } else if(ognThermalState.layer){ ognThermalState.layer.show(on); }
 }
+
+boot();
 
 __HELPJS__
 </script></body></html>"""
