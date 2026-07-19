@@ -269,10 +269,15 @@ function renderData(DATA){
       climbCol:(fl.climb||[]).map(climbColor),
       prim:null, key:null});
   });
+  // single-aircraft view (e.g. "watch my flight"): the trail modes are really about ONE
+  // track, so word them that way; the all-gliders day view keeps the per-flight wording.
+  const _single=DATA.legend.length===1;
+  const _lblAll=_single?"full track":"all flights";
+  const _lblCur=_single?"flown so far":"current flight";
   const leg=[`<b>${DATA.title}</b><br><span class="hint">${DATA.flights.length} flights, ${DATA.legend.length} aircraft</span><br>`,
     `<div style="margin:4px 0;user-select:none">trails:
-      <label><input type="radio" name="tm" value="all"> all flights</label>
-      <label><input type="radio" name="tm" value="current"> current flight</label>
+      <label><input type="radio" name="tm" value="all"> ${_lblAll}</label>
+      <label><input type="radio" name="tm" value="current"> ${_lblCur}</label>
       <label><input type="radio" name="tm" value="tail"> tail</label>
       <label><input type="radio" name="tm" value="off"> off</label>
       <span style="margin-left:8px">colour:</span>
