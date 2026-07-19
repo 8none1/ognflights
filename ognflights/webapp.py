@@ -1786,8 +1786,9 @@ v.entities.add({{position:Cesium.Cartesian3.fromDegrees({lon},{lat},0),
  point:{{pixelSize:9,color:Cesium.Color.YELLOW}},
  label:{{text:"{field}",font:"13px sans-serif",fillColor:Cesium.Color.YELLOW,
  pixelOffset:new Cesium.Cartesian2(0,-14)}}}});
-v.camera.setView({{destination:Cesium.Cartesian3.fromDegrees({lon},{lat - 0.05},22000),
- orientation:{{heading:0,pitch:Cesium.Math.toRadians(-50),roll:0}}}});
+v.camera.lookAt(Cesium.Cartesian3.fromDegrees({lon},{lat},0),
+ new Cesium.HeadingPitchRange(0,Cesium.Math.toRadians(-45),20000));
+v.camera.lookAtTransform(Cesium.Matrix4.IDENTITY);   // centre on the field, then release control
 fetch("/thermals.json").then(function(r){{return r.json();}}).then(function(d){{
  ognThermalLayer(v,d.hotspots,{elev}).show(true);
  document.getElementById("tcount").textContent=(d.hotspots&&d.hotspots.length)?
