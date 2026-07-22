@@ -803,8 +803,10 @@ function buildSettings(){
     +`<label style="display:block"><input type="checkbox" id="traillbl"${trailsOn?" checked":""}> Trail</label>`
     +`<label style="display:block;margin-top:4px">trail length: <span id="tlen">${maxTrail}</span> pts<br>`
     +`<input type="range" id="trailrange" min="20" max="1200" step="20" value="${maxTrail}" style="width:150px"></label>`
-    +`<label style="display:block;margin-top:4px">trail colour: <select id="trailcol">`
-      +`<option value="off">off</option><option value="speed">speed</option><option value="climb">climb</option></select></label>`
+    +`<div style="margin-top:4px">trail colour: `
+      +`<label><input type="radio" name="trailcm" value="off" checked> none</label> `
+      +`<label><input type="radio" name="trailcm" value="speed"> speed</label> `
+      +`<label><input type="radio" name="trailcm" value="climb"> climb</label></div>`
     +`<label style="display:block;margin-top:4px"><input type="checkbox" id="readoutlbl" checked> altitude / climb readouts</label>`
     +`<label style="display:block;margin-top:4px"><input type="checkbox" id="parkedlbl" checked> parked aircraft</label>`
     +`<label style="display:block;margin-top:4px"><input type="checkbox" id="nightlbl" checked> Night sky</label>`
@@ -820,9 +822,9 @@ function buildSettings(){
     applyTrailLength();
   });
   document.getElementById("readoutlbl").addEventListener("change",e=>{ readoutsOn=e.target.checked; applyReadouts(); });
-  const tcol=document.getElementById("trailcol");
-  if(tcol) tcol.addEventListener("change",e=>{ trailColour=e.target.value;
-    if(viewer.scene.requestRenderMode) viewer.scene.requestRender(); });
+  document.querySelectorAll('input[name=trailcm]').forEach(r=>r.addEventListener("change",e=>{
+    trailColour=e.target.value;
+    if(viewer.scene.requestRenderMode) viewer.scene.requestRender(); }));
   document.getElementById("thermalslbl").addEventListener("change",e=>{ setThermals(e.target.checked); });
   document.getElementById("parkedlbl").addEventListener("change",e=>{
     parkedOn=e.target.checked;
