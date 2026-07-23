@@ -1477,8 +1477,8 @@ def _home_page(status: dict, data_dir: str) -> str:
          "desc": "Real-time 3D view of aircraft airborne right now."},
         {"href": "/live?demo=1", "title": "Tour mode",
          "desc": "Big-screen kiosk view: camera slowly orbits the field over live traffic."},
-        {"href": "/replay", "title": "Daily replay",
-         "desc": "3D replay of a day's flights. Pick any day with the date picker."},
+        {"href": "/pick", "title": "Daily replay",
+         "desc": "3D replay of a day's flights: replay the whole day, or pick out specific flights."},
         {"href": "/stats", "title": "Stats",
          "desc": "Collector health and today's capture statistics."},
     ]
@@ -1797,6 +1797,24 @@ being tracked live.</p>
 </div></body></html>"""
 
 
+def _day_json(query: str, data_dir: str) -> str:
+    """A day's flight set (all followed aircraft) as replay DATA, for the flight picker.
+    Heavy simplify keeps the payload small; each flight's take-off (samples[0]) is preserved
+    regardless, so the ?sel= ids it builds still match what the replay computes."""
+    day = _parse_day(query)
+    payload = {"title": "", "flights": [], "legend": [], "models": {}}
+    yf = year_file(day.year, data_dir)
+    if os.path.exists(yf):
+        from replay.make_replay import build_payload, collect
+        s = Store(yf, read_only=True)
+        try:
+            flights, legend = collect(s, day, None, False, simplify=400)
+            payload = build_payload(flights, legend, day.strftime("%Y-%m-%d"), models_url="models")
+        finally:
+            s.close()
+    return json.dumps(payload)
+
+
 def _thermals_page(data_dir: str = "") -> str:
     """Standalone map of the cached thermal hotspots (no flight replay). Fetches
     /thermals.json and draws the shared drift-column layer."""
@@ -1984,6 +2002,15 @@ def make_handler(status, data_dir, replay_script, models_dir, hub):
             elif path == "/healthz":
                 code, body = _healthz_payload(status, data_dir)
                 self._send(code, body, "application/json; charset=utf-8")
+            elif path == "/pick":
+                from replay.make_replay import render_pick
+                self._send(200, render_pick(external=False, data_base="", replay_url="/replay"))
+            elif path == "/days.json":
+                self._send(200, json.dumps({"days": _days_with_flights(data_dir)}),
+                           "application/json; charset=utf-8")
+            elif path == "/day.json":
+                self._send(200, _day_json(urlparse(self.path).query, data_dir),
+                           "application/json; charset=utf-8")
             elif path == "/thermals":
                 self._send(200, _thermals_page(data_dir))
             elif path == "/thermals.json":

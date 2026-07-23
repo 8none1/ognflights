@@ -23,7 +23,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from ognflights.config import GRANSDEN, GROUND_AGL_FT, MIN_FLIGHT_PEAK_AGL_FT
 from ognflights.flights import Flight, segment
 from ognflights.store import Store, store_for_day
-from ognflights.theme import MAP_HELP_BTN, MAP_HELP_HTML, MAP_HELP_JS, THEME_CSS, THERMALS_JS
+from ognflights.theme import (MAP_HELP_BTN, MAP_HELP_HTML, MAP_HELP_JS, THEME_CSS,
+                               THERMALS_JS, nav_html)
 
 FT_TO_M = 0.3048
 GLIDERISH = {"glider", "tow", "motorglider"}
@@ -559,11 +560,29 @@ function filterTime(DATA){
   if(!keep.length||keep.length===DATA.flights.length) return DATA;
   return Object.assign({},DATA,{flights:keep});
 }
+// Client-side subset filter: ?sel=<key@takeoffEpoch>,... keeps only the chosen flights
+// (the flight-picker page builds these links). Aircraft left with no flight are dropped and
+// the survivors re-indexed, like filterAddress. No ?sel= -> unchanged.
+function flightId(DATA, f){
+  const k=(DATA.legend[f.ai]||{}).key||"";
+  return k+"@"+Math.round(Date.parse(f.samples[0][0])/1000);
+}
+function filterSelection(DATA){
+  const sp=new URLSearchParams(location.search).get("sel");
+  if(!sp||!DATA||!DATA.flights||!DATA.flights.length) return DATA;
+  const want=new Set(sp.split(","));
+  const kept=DATA.flights.filter(f=>want.has(flightId(DATA,f)));
+  if(!kept.length) return DATA;   // nothing matched: fall back to the whole day
+  const usedAi=[...new Set(kept.map(f=>f.ai))];
+  const reindex=new Map(usedAi.map((ai,i)=>[ai,i]));
+  return Object.assign({},DATA,{legend:usedAi.map(ai=>DATA.legend[ai]),
+    flights:kept.map(f=>Object.assign({},f,{ai:reindex.get(f.ai)}))});
+}
 async function loadDay(day){
   const addr=new URLSearchParams(location.search).get("address");
   try{
     const DATA=await fetchJson(dataUrl(day+".json"));
-    renderData(filterTime(filterAddress(DATA, addr)));
+    renderData(filterTime(filterSelection(filterAddress(DATA, addr))));
   }catch(err){
     console.error("failed to load day",day,err);
     renderData({title:day, flights:[], legend:[], models:{}});
@@ -626,7 +645,7 @@ function pickDay(ds){
 }
 
 async function boot(){
-  if(!EXTERNAL){ renderData(filterTime(INLINE_DATA)); return; }
+  if(!EXTERNAL){ renderData(filterTime(filterSelection(INLINE_DATA))); return; }
   if(!DAYPICKER){ await loadDay(new URLSearchParams(location.search).get("day")||""); return; }
   // public build: manifest.json -> calendar -> newest day (or ?day= override)
   let manifest;
@@ -949,11 +968,114 @@ def render_html(*, title, payload, home, myaw, trail, colour_mode="off", single_
             .replace("__MULT__", str(mult)))
 
 
+# --- flight picker: choose a day, tick individual flights, replay just those --------------
+# One page for both sites: private (external=false) fetches /day.json + /days.json from the
+# webapp; public (external=true) fetches the published <day>.json + manifest.json. Builds a
+# /replay?...&sel=<key@takeoffEpoch,...> link, which the replay's filterSelection honours.
+PICK_TEMPLATE = r"""<!DOCTYPE html><html lang="en-GB"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>Pick flights - ognflights</title>
+<style>__THEMECSS__
+.acg{padding:.55rem .8rem;margin-bottom:.6rem}
+.acg label.fl{display:block;margin:.15rem 0 .1rem 1.4rem;cursor:pointer;font-size:.95rem}
+.acg label.allsel{cursor:pointer}
+.pdrow{display:flex;flex-wrap:wrap;gap:.9rem;align-items:center}
+.pdrow input[type=date]{font:inherit;color:var(--text);background:var(--panel);
+border:1px solid var(--line);border-radius:8px;padding:.35rem .5rem}
+#bar{position:sticky;bottom:10px;margin-top:1rem;padding:.7rem;text-align:center;
+background:var(--overlay);border:1px solid var(--overlay-line);border-radius:12px;
+backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px)}
+#bar #cnt{margin-left:.7rem;color:var(--dim);font-size:.9rem}
+</style></head><body class="of-body"><div class="of-wrap">
+__NAV__
+<header class="of-header"><h1>Pick flights</h1>
+<p class="intro">Choose a day, then tick the flights you want and replay just those. Times are UTC.</p></header>
+<div class="of-card"><div class="pdrow">
+  <label>Day: <input type="date" id="pd"></label>
+  <a href="#" id="whole" class="of-btn-secondary">Replay the whole day &rarr;</a>
+</div></div>
+<div id="list" style="margin-top:1rem"></div>
+<div id="bar"><button id="go" class="of-btn-primary" disabled>Replay selected</button><span id="cnt"></span></div>
+</div>
+<script>
+const EXTERNAL=__EXTERNAL__, DATABASE=__DATABASE__, REPLAYURL=__REPLAYURL__;
+function dayUrl(d){ return EXTERNAL ? (DATABASE+d+".json") : ("/day.json?day="+d); }
+function daysUrl(){ return EXTERNAL ? (DATABASE+"manifest.json") : "/days.json"; }
+function pad(n){ return String(n).padStart(2,"0"); }
+function hm(iso){ const d=new Date(iso); return pad(d.getUTCHours())+":"+pad(d.getUTCMinutes()); }
+function dur(a,b){ let s=Math.round((Date.parse(b)-Date.parse(a))/1000);
+  const h=Math.floor(s/3600), m=Math.round((s%3600)/60); return h?(h+"h"+pad(m)):(m+"m"); }
+async function fetchJson(u){ const r=await fetch(u,{cache:"no-cache"}); if(!r.ok) throw 0; return r.json(); }
+function flightId(DATA,f){ const k=(DATA.legend[f.ai]||{}).key||""; return k+"@"+Math.round(Date.parse(f.samples[0][0])/1000); }
+function selectedIds(){ return Array.prototype.map.call(document.querySelectorAll(".flk:checked"),x=>x.dataset.id); }
+function updateCount(){ const n=selectedIds().length, go=document.getElementById("go");
+  go.disabled=!n; document.getElementById("cnt").textContent=n?(n+" selected"):"none selected"; }
+let curDay=null;
+function renderList(DATA){
+  const list=document.getElementById("list");
+  if(!DATA.flights||!DATA.flights.length){ list.innerHTML='<p class="hint">No flights recorded for '+curDay+'.</p>'; updateCount(); return; }
+  const byAi={}; DATA.flights.forEach((f,i)=>{ (byAi[f.ai]=byAi[f.ai]||[]).push(i); });
+  let html="";
+  DATA.legend.forEach((a,ai)=>{
+    const fis=(byAi[ai]||[]).slice().sort((x,y)=>Date.parse(DATA.flights[x].samples[0][0])-Date.parse(DATA.flights[y].samples[0][0]));
+    if(!fis.length) return;
+    html+='<div class="of-card acg"><label class="allsel"><input type="checkbox" class="selall" data-ai="'+ai+'"> <b>'+a.label+'</b> <span class="hint">('+fis.length+')</span></label>';
+    fis.forEach(i=>{ const f=DATA.flights[i], s=f.samples;
+      html+='<label class="fl"><input type="checkbox" class="flk" data-ai="'+ai+'" data-id="'+flightId(DATA,f)+'"> '
+        +hm(s[0][0])+'&rarr;'+hm(s[s.length-1][0])+' <span class="hint">('+dur(s[0][0],s[s.length-1][0])+')</span></label>';
+    });
+    html+='</div>';
+  });
+  list.innerHTML=html;
+  list.querySelectorAll(".selall").forEach(cb=>cb.addEventListener("change",e=>{
+    list.querySelectorAll('.flk[data-ai="'+e.target.dataset.ai+'"]').forEach(x=>{ x.checked=e.target.checked; });
+    updateCount();
+  }));
+  list.querySelectorAll(".flk").forEach(cb=>cb.addEventListener("change",updateCount));
+  updateCount();
+}
+async function loadPickDay(day){
+  curDay=day;
+  const list=document.getElementById("list"); list.innerHTML='<p class="hint">Loading&hellip;</p>';
+  try{ renderList(await fetchJson(dayUrl(day))); }
+  catch(e){ list.innerHTML='<p class="hint">No flights recorded for '+day+'.</p>'; updateCount(); }
+}
+async function init(){
+  const pd=document.getElementById("pd");
+  let days=[];
+  try{ const mf=await fetchJson(daysUrl()); days=(mf.days||[]).map(d=>typeof d==="string"?d:d.day); }catch(e){}
+  days.sort();
+  if(days.length){ pd.min=days[0]; pd.max=days[days.length-1]; }
+  const want=new URLSearchParams(location.search).get("day");
+  pd.value=(want && (!days.length||days.indexOf(want)>=0)) ? want : (days[days.length-1]||"");
+  pd.addEventListener("change",()=>loadPickDay(pd.value));
+  document.getElementById("whole").addEventListener("click",e=>{ e.preventDefault(); if(pd.value) location.href=REPLAYURL+"?day="+pd.value; });
+  document.getElementById("go").addEventListener("click",()=>{ const ids=selectedIds();
+    if(ids.length&&curDay) location.href=REPLAYURL+"?day="+curDay+"&sel="+encodeURIComponent(ids.join(",")); });
+  if(pd.value) loadPickDay(pd.value);
+}
+init();
+</script></body></html>"""
+
+
+def render_pick(*, external=False, data_base="", replay_url="/replay"):
+    """The flight-picker page. external=false -> private (webapp endpoints); true -> public."""
+    nav = ('<nav class="of-nav"><a href="index.html">&larr; replay</a></nav>' if external
+           else nav_html("/pick"))
+    return (PICK_TEMPLATE
+            .replace("__THEMECSS__", THEME_CSS)
+            .replace("__NAV__", nav)
+            .replace("__EXTERNAL__", "true" if external else "false")
+            .replace("__DATABASE__", json.dumps(data_base))
+            .replace("__REPLAYURL__", json.dumps(replay_url)))
+
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--out", required=True)
-    p.add_argument("--day", required=True)
-    p.add_argument("--title", required=True)
+    p.add_argument("--day")
+    p.add_argument("--title")
+    p.add_argument("--pick", action="store_true",
+                   help="build the public flight-picker page (no --day/--title needed)")
     p.add_argument("--reg", help='e.g. "G-CKFY" or "G-CKFY:1,2,3,6"')
     p.add_argument("--address", help="select a single aircraft by exact device address/callsign")
     p.add_argument("--gliders", action="store_true", help="all glider/tug types")
@@ -1001,6 +1123,15 @@ def main():
                    help="public build: external-data + day picker + the raw.githubusercontent "
                         "public-data base URL. Overrides --external-data/--data-base.")
     a = p.parse_args()
+
+    if a.pick:
+        html = render_pick(external=True, data_base=PUBLIC_DATA_BASE, replay_url="index.html")
+        with open(a.out, "w") as f:
+            f.write(html)
+        print(f"wrote {a.out}  ({len(html)} bytes; flight picker, public)")
+        return
+    if not a.day or not a.title:
+        p.error("--day and --title are required (unless --pick)")
 
     day = datetime.strptime(a.day, "%Y-%m-%d").replace(tzinfo=timezone.utc)
 
