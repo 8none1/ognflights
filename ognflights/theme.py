@@ -223,7 +223,7 @@ SOAR_SVG = """<svg class="soar" viewBox="0 0 300 100" fill="none" aria-hidden="t
   </svg>"""
 
 # The one canonical nav: same links, same order, on every page.
-NAV_LINKS = (("/", "home"), ("/live", "live"), ("/replay", "replay"),
+NAV_LINKS = (("/", "home"), ("/live", "live"), ("/pick", "replay"),
              ("/thermals", "thermals"), ("/my-flights", "my flights"), ("/stats", "stats"))
 
 # Cesium CDN base, shared by every Cesium page (replay, live chrome, thermals).

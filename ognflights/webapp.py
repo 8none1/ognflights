@@ -330,7 +330,7 @@ max-height:88vh;overflow:auto;min-width:160px}
 </head><body>
 <div class="of-topbar">__NAVLOGO__<b>Live</b>
 <a href="/">home</a>
-<a href="/replay">replay</a>
+<a href="/pick">replay</a>
 <a href="/my-flights">my&nbsp;flights</a>
 <a href="/stats">stats</a> __HELPBTN__</div>
 <div id="c"></div><div id="legend" class="of-panel"><div id="legdyn"><b>Live - Gransden</b><br><span class="hint">connecting...</span></div></div>
@@ -1821,7 +1821,7 @@ def _thermals_page(data_dir: str = "") -> str:
     lat, lon, elev = GRANSDEN.lat, GRANSDEN.lon, GRANSDEN.elevation_ft
     field = CLUB_NAME or "Gransden Lodge"
     nav = ('<div class="of-topbar"><b>Thermals</b>'
-           '<a href="/">home</a><a href="/live">live</a><a href="/replay">replay</a>'
+           '<a href="/">home</a><a href="/live">live</a><a href="/pick">replay</a>'
            '<a href="/stats">stats</a></div>')
     return f"""<!DOCTYPE html><html lang="en-GB"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>ognflights - thermals</title>
