@@ -995,7 +995,7 @@ __NAV__
   <a href="#" id="whole" class="of-btn-secondary">Replay the whole day &rarr;</a>
 </div></div>
 <div id="list" style="margin-top:1rem"></div>
-<div id="bar"><button id="go" class="of-btn-primary" disabled>Replay selected</button><span id="cnt"></span></div>
+<div id="bar"><button id="all" class="of-btn-secondary">Replay all</button> <button id="go" class="of-btn-primary" disabled>Replay selected</button><span id="cnt"></span></div>
 </div>
 <script>
 const EXTERNAL=__EXTERNAL__, DATABASE=__DATABASE__, REPLAYURL=__REPLAYURL__;
@@ -1050,6 +1050,7 @@ async function init(){
   pd.value=(want && (!days.length||days.indexOf(want)>=0)) ? want : (days[days.length-1]||"");
   pd.addEventListener("change",()=>loadPickDay(pd.value));
   document.getElementById("whole").addEventListener("click",e=>{ e.preventDefault(); if(pd.value) location.href=REPLAYURL+"?day="+pd.value; });
+  document.getElementById("all").addEventListener("click",()=>{ if(curDay||pd.value) location.href=REPLAYURL+"?day="+(curDay||pd.value); });
   document.getElementById("go").addEventListener("click",()=>{ const ids=selectedIds();
     if(ids.length&&curDay) location.href=REPLAYURL+"?day="+curDay+"&sel="+encodeURIComponent(ids.join(",")); });
   if(pd.value) loadPickDay(pd.value);
