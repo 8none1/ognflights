@@ -74,8 +74,8 @@ color:var(--faint);border-radius:5px;font:12px system-ui,sans-serif}
 #cal td button.has{color:var(--text);font-weight:700;background:var(--panel);cursor:pointer}
 #cal td button.has:hover{border-color:var(--blue)}
 #cal td button.sel{background:var(--accent);color:var(--accent-ink);border-color:var(--accent)}</style>
-</head><body><div id="c"></div><div id="legend" class="of-panel"></div><div id="daypick" class="of-topbar"><button id="daybtn" type="button" aria-haspopup="true" aria-expanded="false">day &#9662;</button> <a href="https://github.com/8none1/ognflights" target="_blank" rel="noopener">about</a> <a href="#" id="maphelpbtn" class="of-btn-secondary" title="How to move around the 3D view">?</a><div id="cal" class="of-panel" hidden></div></div><div id="empty" class="of-panel">No flights recorded for this day.</div>
-<div id="maphelp" class="of-helpwrap" hidden><div class="of-help" role="dialog" aria-modal="true" aria-labelledby="maphelptitle"><button type="button" class="of-help-x" id="maphelpx" aria-label="Close help">&#215;</button><h2 id="maphelptitle">Moving around the 3D view</h2><ul><li><b>Left-click and drag</b> to pan and spin the view around.</li><li><b>Scroll the mouse wheel</b> to zoom in and out. <b>Right-click and drag</b> up or down also zooms, or pinch on a trackpad.</li><li><b>Hold Ctrl and left-click and drag</b> (or <b>middle-click and drag</b>) to tilt the camera and change the viewing angle.</li></ul><button type="button" class="of-btn-primary" id="maphelpok">Got it</button></div></div>
+</head><body><div id="c"></div><div id="legend" class="of-panel"></div><div id="daypick" class="of-topbar"><button id="daybtn" type="button" aria-haspopup="true" aria-expanded="false">day &#9662;</button> <a href="pick.html">pick flights</a> <a href="https://github.com/8none1/ognflights" target="_blank" rel="noopener">about</a> <a href="#" id="maphelpbtn" class="of-btn-secondary" title="How to move around the 3D view">?</a><div id="cal" class="of-panel" hidden></div></div><div id="empty" class="of-panel">No flights recorded for this day.</div>
+<div id="maphelp" class="of-helpwrap" hidden><div class="of-help" role="dialog" aria-modal="true" aria-labelledby="maphelptitle"><button type="button" class="of-help-x" id="maphelpx" aria-label="Close help">&#215;</button><h2 id="maphelptitle">Moving around the 3D view</h2><ul><li><b>Left-click and drag</b> to pan and spin the view around.</li><li><b>Scroll the mouse wheel</b> to zoom in and out. <b>Right-click and drag</b> up or down also zooms, or pinch on a trackpad.</li><li><b>Hold Ctrl and left-click and drag</b> (or <b>middle-click and drag</b>) to tilt the camera and change the viewing angle.</li><li id="maphelp-play"><b>Playback</b>: the flight plays automatically. Use the round <b>play / pause</b> button in the clock dial at the <b>bottom-left</b> to start or stop it, and drag the <b>timeline</b> along the bottom to jump to any moment.</li></ul><button type="button" class="of-btn-primary" id="maphelpok">Got it</button></div></div>
 <script>
 const INLINE_DATA=null;   // inlined DATA (inline mode) or null (external-data mode)
 const EXTERNAL=true;     // true = fetch DATA (and manifest, in public build) at runtime
@@ -85,7 +85,7 @@ const HOME={"lon": -0.10937, "lat": 52.09717, "height": 6000.0, "heading": 0.0, 
 const MYAW={"dr400": 0.0, "glider": 0.0};             // {modelKey: radians} yaw offset per model; tune with number keys + [ ]
 const TRAILMODE="current";
 const COLOURMODE="off";   // initial trail colouring: "off" | "speed" | "climb"
-const SINGLELINK="2026-07-19"; // day string to link each aircraft to its single-aircraft view, or null
+const SINGLELINK="2026-07-22"; // day string to link each aircraft to its single-aircraft view, or null
 const PATHRES=3.0;
 const TAILSECS=60;  // sliding "tail" trail: seconds of track kept behind the aircraft
 let tailSecs=TAILSECS;        // live-adjustable via the settings slider
@@ -255,10 +255,15 @@ function renderData(DATA){
       climbCol:(fl.climb||[]).map(climbColor),
       prim:null, key:null});
   });
+  // single-aircraft view (e.g. "watch my flight"): the trail modes are really about ONE
+  // track, so word them that way; the all-gliders day view keeps the per-flight wording.
+  const _single=DATA.legend.length===1;
+  const _lblAll=_single?"full track":"all flights";
+  const _lblCur=_single?"flown so far":"current flight";
   const leg=[`<b>${DATA.title}</b><br><span class="hint">${DATA.flights.length} flights, ${DATA.legend.length} aircraft</span><br>`,
     `<div style="margin:4px 0;user-select:none">trails:
-      <label><input type="radio" name="tm" value="all"> all flights</label>
-      <label><input type="radio" name="tm" value="current"> current flight</label>
+      <label><input type="radio" name="tm" value="all"> ${_lblAll}</label>
+      <label><input type="radio" name="tm" value="current"> ${_lblCur}</label>
       <label><input type="radio" name="tm" value="tail"> tail</label>
       <label><input type="radio" name="tm" value="off"> off</label>
       <span style="margin-left:8px">colour:</span>
@@ -540,11 +545,29 @@ function filterTime(DATA){
   if(!keep.length||keep.length===DATA.flights.length) return DATA;
   return Object.assign({},DATA,{flights:keep});
 }
+// Client-side subset filter: ?sel=<key@takeoffEpoch>,... keeps only the chosen flights
+// (the flight-picker page builds these links). Aircraft left with no flight are dropped and
+// the survivors re-indexed, like filterAddress. No ?sel= -> unchanged.
+function flightId(DATA, f){
+  const k=(DATA.legend[f.ai]||{}).key||"";
+  return k+"@"+Math.round(Date.parse(f.samples[0][0])/1000);
+}
+function filterSelection(DATA){
+  const sp=new URLSearchParams(location.search).get("sel");
+  if(!sp||!DATA||!DATA.flights||!DATA.flights.length) return DATA;
+  const want=new Set(sp.split(","));
+  const kept=DATA.flights.filter(f=>want.has(flightId(DATA,f)));
+  if(!kept.length) return DATA;   // nothing matched: fall back to the whole day
+  const usedAi=[...new Set(kept.map(f=>f.ai))];
+  const reindex=new Map(usedAi.map((ai,i)=>[ai,i]));
+  return Object.assign({},DATA,{legend:usedAi.map(ai=>DATA.legend[ai]),
+    flights:kept.map(f=>Object.assign({},f,{ai:reindex.get(f.ai)}))});
+}
 async function loadDay(day){
   const addr=new URLSearchParams(location.search).get("address");
   try{
     const DATA=await fetchJson(dataUrl(day+".json"));
-    renderData(filterTime(filterAddress(DATA, addr)));
+    renderData(filterTime(filterSelection(filterAddress(DATA, addr))));
   }catch(err){
     console.error("failed to load day",day,err);
     renderData({title:day, flights:[], legend:[], models:{}});
@@ -607,7 +630,7 @@ function pickDay(ds){
 }
 
 async function boot(){
-  if(!EXTERNAL){ renderData(filterTime(INLINE_DATA)); return; }
+  if(!EXTERNAL){ renderData(filterTime(filterSelection(INLINE_DATA))); return; }
   if(!DAYPICKER){ await loadDay(new URLSearchParams(location.search).get("day")||""); return; }
   // public build: manifest.json -> calendar -> newest day (or ?day= override)
   let manifest;
@@ -632,9 +655,11 @@ async function boot(){
   });
   document.addEventListener("click",e=>{ if(!e.target.closest("#daypick")) openCal(false); });
 }
-boot();
-
 // --- thermal-hotspots overlay (shared renderer; lazy-loaded on first toggle) ------------
+// Declared BEFORE boot(): the inline (private) replay runs renderData() synchronously
+// inside boot(), and its legend wiring reads ognThermalState.on - if this were declared
+// after boot() that read would hit the let's temporal dead zone, throw, and abort
+// renderData before it sets the playback clock (leaving the timeline at "now").
 
 function ognThermalLayer(viewer, hs, fieldElevFt){
   const FT=0.3048, ents=[];
@@ -685,6 +710,8 @@ function setThermals(on){
   } else if(ognThermalState.layer){ ognThermalState.layer.show(on); }
 }
 
+boot();
+
 // map-controls help overlay (shared: see ognflights/theme.py)
 (function(){
   var KEY="ogn.maphelp.dismissed";
@@ -707,8 +734,15 @@ function setThermals(on){
     var b=e.target.closest ? e.target.closest("#maphelpbtn") : null;
     if(b){ e.preventDefault(); openHelp(); }
   });
+  // the playback line only applies where there's a timeline (the replay), not on /live
+  var pl=document.getElementById("maphelp-play");
+  if(pl && !document.querySelector(".cesium-viewer-animationContainer")) pl.style.display="none";
+  // arriving via "watch my flight" (?guide=1) forces the help open even for a returning
+  // visitor, because we should assume they don't know the controls.
+  var guide=false;
+  try{ guide=new URLSearchParams(location.search).get("guide")==="1"; }catch(e){}
   var seen=false;
   try{ seen=localStorage.getItem(KEY)==="1"; }catch(e){ seen=true; }
-  if(!seen && !window.OF_HELP_SUPPRESS) openHelp();
+  if((guide || !seen) && !window.OF_HELP_SUPPRESS) openHelp();
 })();
 </script></body></html>

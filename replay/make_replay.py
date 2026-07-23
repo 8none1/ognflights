@@ -698,6 +698,7 @@ __HELPJS__
 DAYPICKER_HTML = ('<div id="daypick" class="of-topbar">'
                   '<button id="daybtn" type="button" aria-haspopup="true" aria-expanded="false">'
                   'day &#9662;</button> '
+                  '<a href="pick.html">pick flights</a> '
                   '<a href="https://github.com/8none1/ognflights" target="_blank" rel="noopener">about</a> '
                   + MAP_HELP_BTN +
                   '<div id="cal" class="of-panel" hidden></div></div>')
