@@ -36,6 +36,15 @@ FLARM/ADS-B on aircraft  ->  OGN ground receivers (APRS-IS)  ->  ognflights
   initial climb rate.
 - **`export.py`** - GPX, KML (plain `LineString`, works in Google Earth **Web**),
   and minimal IGC (OGN-derived, GPS altitude only - good for replay, not badge claims).
+- **`collector.py`** - the always-on capture: `watch` (buddy-follow, the normal mode)
+  and the legacy `collect` area capture.
+- **`webapp.py`** - a stdlib HTTP dashboard served by the container: home, a live
+  real-time 3D view, the day replay, a "watch your flight" finder, the flight picker,
+  a thermal-hotspot map, and health (`/stats`, `/healthz`).
+- **`thermals.py`** - thermal-hotspot detection (recurring circling climbs, aerotow
+  excluded), cached in `data/thermals.sqlite` for the map overlays.
+- **`replay/make_replay.py`** + **`theme.py`** - the CesiumJS replay/flight-picker page
+  builder and the shared CSS/JS design system used across every page.
 
 ## Usage
 
@@ -45,11 +54,16 @@ FLARM/ADS-B on aircraft  ->  OGN ground receivers (APRS-IS)  ->  ognflights
 python3 cli.py watch                        # runs until stopped (reconnects automatically)
 python3 cli.py watch --serve --port 8080    # also serve the dashboard (see below)
 python3 cli.py watch --minutes 5            # cap it for a quick test
-#    Deploy on perceptron with Docker (serves the dashboard on host port 8477):
-#      docker compose pull && docker compose up -d
-#    Dashboard:  http://perceptron:8477/       -> today's all-gliders 3D replay
-#                http://perceptron:8477/stats  -> live health + capture statistics
-#    Images are built and published to GHCR by CI on push to main.
+#    Deployed on perceptron with Docker; public via a cloudflared tunnel at
+#    https://ogn.8none1.org  (CI builds+publishes the GHCR image on push to main;
+#    then `docker compose pull && docker compose up -d`).
+#    Dashboard routes:  /          home
+#                       /live      real-time 3D view (+ /live?demo=1 kiosk/tour)
+#                       /replay    3D replay of a day
+#                       /pick      choose a day, pick specific flights, replay the subset
+#                       /my-flights  find a flight by date + rough take-off time
+#                       /thermals  thermal-hotspot map
+#                       /stats /healthz  component health
 
 #    ...legacy simple area capture (stores everything within --radius):
 python3 cli.py collect --minutes 5
@@ -84,39 +98,46 @@ No server, no account, no build step - just an HTML file.
 ```bash
 # one aircraft's selected flights, opening on the speed-coloured full track
 python3 replay/make_replay.py --out out/gckfy.html --day 2026-07-01 \
-    --title "G-CKFY (my flights)" --reg "G-CKFY:1,2,3,6" --trail full --speed-colour
+    --title "G-CKFY (my flights)" --reg "G-CKFY:1,2,3,6" --trail all --colour-mode speed
 
 # every glider/tug that flew that day
 python3 replay/make_replay.py --out out/all-gliders.html --day 2026-07-01 \
     --title "All gliders" --gliders
 ```
 
-Features: time slider; per-aircraft 3D models chosen from the CGC model string
-(gliders vs DR-400 tugs, see the `MODELS` registry); trail modes full / active /
-off; ground-speed-coloured trails (speed is derived from consecutive fixes, since
-the feed rarely supplies it); night-sky and place-names toggles; a reset-view
-button; `--home "lon,lat,height,heading,pitch"` opening camera (press **C** in the
-page to capture the current view); model yaw tuning (number keys pick a model,
-`[` / `]` rotate it, logged for `--yaw`).
+Features: time slider; per-aircraft 3D models from the CGC model string (gliders vs
+DR-400 tugs, see the `MODELS` registry); trail modes **all / current / tail / off**
+(worded "full track / flown so far" for a single glider); a single **progressive** trail
+that draws as the glider flies; **colour trails by ground speed or climb rate**; a
+**thermal-hotspot** overlay (recurring lift as tilted 3D drift-columns); night-sky and
+place-names toggles; a reset-view button; `--home "lon,lat,height,heading,pitch"` opening
+camera (press **C** in the page to capture the current view); model yaw tuning (number
+keys pick a model, `[` / `]` rotate it, logged for `--yaw`). A companion **flight-picker**
+page (`--pick`, and `/pick` on the dashboard) lets you choose a day and replay any subset
+of its flights.
 
 Models live in `replay/models/` (glTF, GPLv2 from FlightAirMap - see
 `replay/models/NOTICE.md`) and are referenced by URL so the browser caches them
 across pages.
 
-**Publishing:** build the pages into `site/flights/` (which is tracked), commit,
-then run the **Publish to whizzy.org** action (`workflow_dispatch`, so only repo
-collaborators can trigger it). It copies `site/flights/*.html` plus the models
-into the website repo (`8none1.github.io`) under `flights/`, which serves them at
-www.whizzy.org/flights/ via GitHub Pages. That website is only a *publishing
-target* - all project code, models and CI live here.
+**Publishing (public site).** The public dashboard at www.whizzy.org/flights is two
+static pages in the website repo (`8none1.github.io`, GitHub Pages): the replay
+(`flights/index.html`) and the flight picker (`flights/pick.html`), both built by
+`make_replay.py` in **external-data mode** (`--public` / `--pick`). They hold no flight
+data; they `fetch()` it at runtime from the **`public-data`** branch of this repo via
+`raw.githubusercontent.com` (CORS `*`, ~5 min cache).
 
-The build itself runs locally because it reads the local SQLite capture, which
-isn't in the cloud (GitHub runners are ephemeral and can't run the always-on
-collector). Full automation would live on the always-on box (perceptron), not
-github.com.
+The always-on collector on perceptron runs an **hourly publish worker** that rebuilds the
+current day and pushes per-day `<YYYY-MM-DD>.json` + `manifest.json` + `thermals.json` to
+`public-data`. All captured days are kept indefinitely (the month-calendar picker reads
+`manifest.json`); once a day, after the UTC date rolls over, the worker finalises the day
+that ended and flattens the branch to a single commit so its history stays small. Push
+auth is an SSH deploy key on perceptron.
 
-One-time setup for the publish action: a **write deploy key** on `8none1.github.io`
-whose private half is stored here as the `WHIZZY_DEPLOY_KEY` Actions secret.
+Rebuilding the pages themselves (only when the replay/picker UI changes) is a manual
+`make_replay --public` / `--pick` build copied into `8none1.github.io/flights/` and pushed
+to `master`. The website is only a *publishing target* - all project code, models and CI
+live here.
 
 The Cesium version is pinned in the `CES` constant of `make_replay.py`; a weekly
 GitHub Action (`.github/workflows/cesium-version-check.yml`) opens an issue when a
@@ -153,20 +174,20 @@ Working and validated end to end:
 - CGC backfill recovered a full day (all 10 G-CKFY flights); launch classifier
   read morning circuits as winch, afternoon as aerotow.
 
-Done since:
-- **`watch` daemon** (buddy-follow capture): subscribe to a catch circle, detect
-  launches inside the field geofence (a climb-out, so parked aircraft are ignored),
-  then follow each launched aircraft *anywhere* via a live APRS-IS `b/` buddy filter
-  until it lands. Type-agnostic (gliders, tugs, motorgliders) and captures only our
-  flights. Supersedes the old area-capture + type filter.
+Done since (all deployed and live):
+- **`watch` daemon** (buddy-follow capture): subscribe to a catch circle, detect launches
+  from the field geofence, then follow each launched aircraft *anywhere* via a live `b/`
+  buddy filter until it lands. Captures only our flights; also stores native course + rot.
 - **Year-partitioned storage** (`data/ogn-YYYY.sqlite`, WAL), kept indefinitely.
-- **Docker** deployment (`Dockerfile` + `docker-compose.yml`).
+- **Docker/GHCR** deployment on perceptron, public via a cloudflared tunnel (ogn.8none1.org).
+- **Web dashboard**: live real-time 3D view (SSE), day replay, "watch your flight" finder,
+  flight picker, thermal-hotspot map, and component health (`/stats`, `/healthz`).
+- **Replay/live UI**: colour trails by speed or climb, a single progressive trail, and a
+  thermal-hotspot 3D drift-column overlay.
+- **Public site** (www.whizzy.org/flights): all captured days with a month-calendar picker
+  and the flight picker, fed hourly from the `public-data` branch.
 
-To do (rough priority):
-1. **Deploy on perceptron**: `docker compose up -d --build` (data persists in `./data`).
-2. Tune the winch/aerotow classifier against more known launches.
-3. Optional: local-time display, daily auto-export, a small dashboard.
-4. **Live mode** - stream directly from OGN and update the Cesium map/tracks in
-   real time (aircraft move as beacons arrive), instead of replaying a stored day.
-   The `watch` daemon already gives the continuous feed; needs a push/poll path to
-   the browser.
+To do:
+- Tune the winch/aerotow launch classifier against more known launches.
+- (nice-to-have) give the flight picker the same month-calendar date picker as the replay;
+  bring the replay's per-vertex colour gradient to the live trails.

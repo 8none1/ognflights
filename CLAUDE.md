@@ -19,15 +19,20 @@ FLARM/ADS-B on aircraft  ->  OGN ground receivers (APRS-IS)  ->  collector -> SQ
                                        flight segmentation -> GPX / KML / IGC / earth-KML
 ```
 
-- `ognflights/aprs.py` — OGN APRS-IS client + beacon parser (stdlib sockets).
+- `ognflights/aprs.py` — OGN APRS-IS client + beacon parser (lat/lon/alt/speed/climb/**course/rot**). Stdlib sockets.
 - `ognflights/ddb.py` — OGN Device Database: device hex id -> registration/CN/type. Cached 24 h.
-- `ognflights/store.py` — SQLite: `fixes` + `devices`. `OGNFLIGHTS_DB` env overrides path.
+- `ognflights/store.py` — SQLite `fixes` (+ `course`, `rot`) + `devices`, **year-partitioned** (`data/ogn-YYYY.sqlite`, WAL); idempotent ALTER-migrations. `OGNFLIGHTS_DB` overrides.
 - `ognflights/flights.py` — per-aircraft segmentation (ground-AGL + max-gap); winch/aerotow heuristic.
-- `ognflights/export.py` — GPX, KML (`LineString`, Google-Earth-Web friendly), IGC, and `kml_tracks` (whole day, one file).
-- `ognflights/cgc.py` — **dormant** manual-only historical backfill from the CGC API.
-- `ognflights/collector.py` — streaming daemon (`collect`).
-- `cli.py` — `collect | backfill | aircraft | flights | export | earth`.
-- `ognflights.service` — systemd unit for the always-on collector (not yet deployed).
+- `ognflights/export.py` — GPX, KML, IGC, `kml_tracks` (whole day, one file).
+- `ognflights/collector.py` — `collect` (legacy area capture) + **`watch`** (buddy-follow daemon); shares a status dict + live hub with the webapp.
+- `ognflights/webapp.py` — stdlib HTTP server for the container: `/` `/live`(+SSE) `/replay` `/my-flights` `/pick` `/thermals` `/stats` `/healthz` and the JSON endpoints; injects the Cesium chrome.
+- `ognflights/thermals.py` — thermal-hotspot detection + cache (`data/thermals.sqlite`).
+- `ognflights/theme.py` — shared design system: CSS, nav, and the shared Cesium JS (help overlay, `ognThermalLayer`). Inlined by both webapp and make_replay so pages can't drift.
+- `ognflights/cgc.py` — **dormant** manual-only CGC backfill.
+- `replay/make_replay.py` — Cesium replay page builder (inline=private, external=public), the **flight-picker** page (`render_pick`), and the `collect`/`build_payload` the publisher reuses.
+- `publish/sync_public.py` + `publish/worker.py` — build per-day JSON + `thermals.json` into a `public-data` git worktree; the worker pushes hourly and flattens the branch daily.
+- `cli.py` — `watch | collect | healthcheck | aircraft | flights | export | backfill | publish | thermals | earth`.
+- `ognflights.service` — systemd unit (unused; deployment is Docker/GHCR on perceptron).
 
 ## Key facts / decisions
 
@@ -46,49 +51,55 @@ FLARM/ADS-B on aircraft  ->  OGN ground receivers (APRS-IS)  ->  collector -> SQ
 - OGN altitude = GPS alt vs WGS84 geoid; CGC backfill = baro ft ASL. Both fine for
   the ground-threshold segmentation.
 
-## Status
+## Status — deployed and live
 
-Validated end to end: OGN capture, segmentation, exports, `earth` KML, CGC backfill,
-and CesiumJS 3D replays (`replay/make_replay.py`, published to www.whizzy.org/flights).
+Runs in production on **perceptron** as a Docker container (GHCR image
+`ghcr.io/8none1/ognflights`), public via a **cloudflared** tunnel at
+**https://ogn.8none1.org** and on the static site **https://www.whizzy.org/flights**.
 
-Capture is now the **`watch` daemon** (buddy-follow): subscribe to a catch circle,
-detect launches inside the field geofence (a climb-out, so parked aircraft are
-ignored), then follow each launched aircraft *anywhere* via a live APRS-IS `b/`
-buddy filter until it lands. Type-agnostic; stores only our flights into
-**year-partitioned** SQLite (`data/ogn-YYYY.sqlite`, WAL). Ships as a **Docker**
-container (`Dockerfile` + `docker-compose.yml`).
+**Capture:** the `watch` daemon (buddy-follow) — subscribe to a catch circle, detect a
+launch from the field geofence, follow each launched aircraft anywhere via a live `b/`
+buddy filter until it lands. Stores only our flights, kept indefinitely, and now also the
+native **course** and **rot** (turn rate) per fix.
 
-**Public dashboard pipeline (Phase 1 built).** A public replay page lives on the
-static site (whizzy.org) showing the last 7 days with a day picker, full reg/CN
-labels, no live view, no stats. It updates hourly WITHOUT a Jekyll rebuild:
-perceptron (Phase 2) commits per-day `<YYYY-MM-DD>.json` + `manifest.json` to a
-dedicated **`public-data`** branch of this repo, and the page fetches them from
-`https://raw.githubusercontent.com/8none1/ognflights/public-data/` (raw sends
-`access-control-allow-origin: *`, so CORS works from whizzy.org; ~5 min cache).
+**Dashboard** (`ognflights/webapp.py`; Cesium chrome from `make_replay.py`):
+- `/` home · `/live` real-time SSE 3D view (+ `?demo=1` kiosk/tour) · `/replay` day replay
+  · `/my-flights` find a flight by date + rough time · `/pick` choose a day and tick
+  individual flights (grouped by aircraft) to replay a subset or the whole day · `/thermals`
+  hotspot map · `/stats` + `/healthz` health.
+- Replay/live extras: climb/speed **colour trails**, a single **progressive trail** that
+  draws as the glider flies, and the **thermal-hotspot** 3D drift-column overlay (toggle).
+- The replay filters (`?address=`, `?t=`, **`?sel=`** subset) compose; `/pick` builds `?sel=`.
 
-- `replay/make_replay.py` now has an **external-data mode**: `--external-data`
-  (page `fetch()`es its DATA), `--data-base <url>`, `--day-picker`, and a `--public`
-  shortcut (external + day picker + the raw base). Default stays **inline** so the
-  private `/replay` is unchanged. Build the public page:
-  `python3 replay/make_replay.py --out publish/public-index.html --public --day <any> --title "Gransden flights" --link-single --path-resolution 3` (saved copy in `publish/public-index.html`).
-- `publish/sync_public.py` (also `python3 cli.py publish --out DIR`): builds the
-  last N days' JSON + manifest, opens the year SQLite **read-only** (WAL-safe, does
-  not disturb the live collector), only rewrites changed files, prunes days outside
-  the window, and has `--commit`/`--push` for a `public-data` worktree (unused in
-  Phase 1; Phase 2 will push from perceptron).
+**Health:** `/stats` = per-component status (dashboard / OGN backend link / aircraft in
+range / storage / publish worker); `/healthz` = JSON 200/503 driving the Docker HEALTHCHECK
+(`cli.py healthcheck`). Link liveness ≠ traffic, so a quiet sky reads healthy.
 
-Recon for Phase 2: website repo is `/home/will/source/8none1.github.io` (Jekyll,
-branch `master`, CNAME www.whizzy.org, no `.nojekyll`; deploys via GitHub Actions
-`deploy.yml` on push to master). It already has a `flights/` dir with per-day HTML +
-`flights/models/*.glb` and `flights/index.html`; the public page would land there.
-Perceptron's `~/docker/ognflights` remote is **HTTPS with no push auth** (no
-credential helper, no `~/.netrc`, no `gh`, no token env) - Phase 2 must add a
-credential (a `gh` token or an SSH deploy key) before it can push `public-data`.
+**Thermal hotspots** (`ognflights/thermals.py`): recurring climbs (glider + climbing +
+circling via `rot`, aerotow excluded by tug proximity), grid-binned + flood-fill clustered
+into centroid / radius / altitude-band / base→top **drift**, cached in a *separate*
+`data/thermals.sqlite` (no collector contention), recomputed daily on the publish worker's
+rollover. Rendered as tilted 3D drift-columns via `ognThermalLayer` (theme.py) on `/thermals`,
+the replay/live overlay, and the public site.
 
-Open items: (1) **deploy `watch` on perceptron** (`docker compose up -d --build`);
-(2) tune the winch/aerotow classifier; (3) **Phase 2**: publish the public page to
-the website `flights/` dir, give perceptron push auth, and cron the hourly
-`cli.py publish --commit --push` into a `public-data` worktree.
+**Public site:** **all captured days** (indefinite; was a rolling 7) with a **month-calendar**
+day picker and the flight picker (`flights/pick.html`). Each hourly run the worker rebuilds
+*today* and pushes per-day `<YYYY-MM-DD>.json` + `manifest.json` + `thermals.json` to the
+**`public-data`** branch (raw.githubusercontent, CORS `*`, ~5 min cache; page fetches from
+`https://raw.githubusercontent.com/8none1/ognflights/public-data/`). On the UTC date rollover
+it finalises the day that just ended and **flattens** the branch to one commit (force-push),
+so `.git` stays bounded. Push auth = an SSH deploy key on perceptron. Build the public pages:
+`python3 replay/make_replay.py --out publish/public-index.html --public --day <any> --title "Gransden flights" --link-single --path-resolution 3` and `--pick --out .../pick.html`; copy into `8none1.github.io/flights/` and push `master` (Pages).
+
+**Deploy flow:** *dev mode* (bind-mount overlay, iterate on perceptron, no GitHub) vs
+*production* (commit → push → GitHub Actions `build-image.yml` publishes the GHCR image →
+`docker compose pull && up -d`). See memory `ognflights-deploy-modes` / `public-site-publishing`.
+After a production deploy, reconcile perceptron's checkout (`git fetch && git merge --ff-only`).
+
+## Open items
+- Tune the winch/aerotow launch classifier against more known launches.
+- (deferred) Give `/pick` the same month-calendar date picker as the replay (currently a native `<input type=date>`).
+- (deferred) Live trails colour by the aircraft's *current* climb/speed (whole trail one colour); the replay does a per-vertex spatial gradient. Could bring the gradient to live.
 
 ## Conventions
 
